@@ -1,0 +1,22 @@
+{
+  "name": "connectors",
+  "module": "index.ts",
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/lodash": "^4.17.20"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "drizzle-orm": "^0.44.7",
+    "kafkajs": "^2.2.4",
+    "lodash": "^4.17.21",
+    "mongodb": "^6.20.0",
+    "pino": "^10.1.0",
+    "pino-pretty": "^13.1.2",
+    "ulid": "^3.0.1"
+  }
+}
