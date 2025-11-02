@@ -1,6 +1,6 @@
 // lib/test/mongodb.test.ts
 import { MongoDBConnector } from '@core/mongodb.connector';
-import { log } from '@utils';
+import { log } from '@rniverse/utils';
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 
 interface User {

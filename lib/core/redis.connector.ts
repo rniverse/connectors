@@ -2,7 +2,7 @@
 
 import { initRedis } from '@tools/redis.tool';
 import type { RedisConnectorConfig } from '@type/redis.type';
-import { log } from '@utils';
+import { log } from '@rniverse/utils';
 
 export class RedisConnector {
   client: ReturnType<typeof initRedis> | null = null;

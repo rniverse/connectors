@@ -2,7 +2,7 @@
 
 import { initORM } from '@tools';
 import type { SQLConnectorConfig } from '@type/sql.type';
-import { log } from '@utils';
+import { log } from '@rniverse/utils';
 
 export class SQLConnector {
   client: ReturnType<typeof initORM> | null = null;

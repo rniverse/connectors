@@ -1,6 +1,6 @@
 // lib/test/redpanda.test.ts
 import { RedpandaConnector } from '@core/redpanda.connector';
-import { log } from '@utils';
+import { log } from '@rniverse/utils';
 import { describe, test, expect } from 'bun:test';
 
 describe('Redpanda Tool Tests', () => {

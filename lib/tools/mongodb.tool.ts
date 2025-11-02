@@ -1,7 +1,7 @@
 // lib/tools/mongodb.tool.ts
 import { MongoClient, Db } from 'mongodb';
 import type { MongoDBConnectorConfig } from '../types/mongodb.type';
-import { log } from '@utils';
+import { log } from '@rniverse/utils';
 
 const defaultOptions = {
   maxPoolSize: 10,

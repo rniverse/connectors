@@ -8,7 +8,7 @@ import type {
   RedpandaMessage,
   RedpandaSubscribeConfig 
 } from '@type/redpanda.type';
-import { log } from '@utils';
+import { log } from '@rniverse/utils';
 import type { Admin, Producer, Consumer, EachMessagePayload } from 'kafkajs';
 import { Partitioners } from 'kafkajs';
 

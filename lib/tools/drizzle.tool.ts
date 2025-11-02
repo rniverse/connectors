@@ -4,7 +4,7 @@
 import { drizzle as createORM } from "drizzle-orm/bun-sql";
 import { SQL as BunSQL } from "bun";
 import type { SQLConnectorConfig, SQLConnectorOptionsConfig } from "lib/types/sql.type";
-import { log } from "@utils";
+import { log } from "@rniverse/utils";
 
 export function initORM(connection: SQLConnectorConfig) {
   const { url, ...rest } = connection;

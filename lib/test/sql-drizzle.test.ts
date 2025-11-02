@@ -1,6 +1,6 @@
 // lib/test/sql-drizzle.test.ts
 import { SQLConnector } from '@core/sql.connector';
-import { log } from '@utils';
+import { log } from '@rniverse/utils';
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';

@@ -1,6 +1,6 @@
 // lib/test/redis-comprehensive.test.ts
 import { RedisConnector } from '@core/redis.connector';
-import { log } from '@utils';
+import { log } from '@rniverse/utils';
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 
 describe('Redis Comprehensive Tests', () => {

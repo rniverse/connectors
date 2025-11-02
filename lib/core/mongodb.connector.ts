@@ -3,7 +3,7 @@ import { Db, Collection, MongoClient } from 'mongodb';
 import type { Document, Filter, UpdateFilter, FindOptions, BulkWriteOptions, OptionalUnlessRequiredId } from 'mongodb';
 import type { MongoDBConnectorConfig } from '../types/mongodb.type';
 import { initMongoDB, closeMongoDB } from '@tools/mongodb.tool';
-import { log } from '@utils';
+import { log } from '@rniverse/utils';
 
 export class MongoDBConnector {
   private db: Db | null = null;

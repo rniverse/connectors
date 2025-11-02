@@ -11,6 +11,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@rniverse/utils": "github:rniverse/utils",
     "drizzle-orm": "^0.44.7",
     "kafkajs": "^2.2.4",
     "lodash": "^4.17.21",
