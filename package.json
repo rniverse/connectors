@@ -1,5 +1,5 @@
 {
-  "name": "connectors",
+  "name": "@rniverse/connectors",
   "module": "index.ts",
   "devDependencies": {
     "@types/bun": "latest",
