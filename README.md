@@ -8,6 +8,18 @@ A comprehensive TypeScript connector library for SQL (with Drizzle ORM), Redis, 
 bun install
 ```
 
+# expected in root project package.json deps
+
+```
+
+  "@rniverse/utils": "github:rniverse/utils#dist",
+  "drizzle-orm": "^0.44.7",
+  "kafkajs": "^2.2.4",
+  "mongodb": "^6.20.0"
+
+
+```
+
 ## Available Connectors
 
 ### 1. SQL Connector (with Drizzle ORM)
