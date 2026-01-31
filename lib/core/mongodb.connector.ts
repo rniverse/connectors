@@ -2,16 +2,16 @@
 
 import { log } from '@rniverse/utils';
 import { closeMongoDB, initMongoDB } from '@tools/mongodb.tool';
-import type {
-	BulkWriteOptions,
-	Collection,
+import {
 	Db,
-	Document,
-	Filter,
-	FindOptions,
-	MongoClient,
-	OptionalUnlessRequiredId,
-	UpdateFilter,
+	type BulkWriteOptions,
+	type Collection,
+	type Document,
+	type Filter,
+	type FindOptions,
+	type MongoClient,
+	type OptionalUnlessRequiredId,
+	type UpdateFilter,
 } from 'mongodb';
 import type { MongoDBConnectorConfig } from '../types/mongodb.type';
 
@@ -19,15 +19,24 @@ export class MongoDBConnector {
 	private db: Db | null = null;
 	private client: MongoClient | null = null;
 	private config: MongoDBConnectorConfig;
+	private initPromise: Promise<any> | null = null;
 
 	constructor(config: MongoDBConnectorConfig) {
 		this.config = config;
 		this.initialize();
 	}
 
+	async connect() {
+		return this.initPromise;
+	}
+
 	private async initialize() {
+		if (this.initPromise) {
+			return this.initPromise;
+		}
 		try {
-			const { client, db } = await initMongoDB(this.config);
+			this.initPromise = initMongoDB(this.config);
+			const { client, db } = await this.initPromise;
 			this.client = client;
 			this.db = db;
 		} catch (error) {
@@ -67,7 +76,20 @@ export class MongoDBConnector {
 		return this.db;
 	}
 
-	getCollection<T extends Document = Document>(name: string): Collection<T> {
+	getDB(name: string): Db {
+		if (!this.client) throw new Error('MongoClient not initialized');
+		return this.client.db(name);
+	}
+
+	getCollection<T extends Document = Document>(name: string, opts?: {db: string | Db}): Collection<T> {
+		if (opts?.db) {
+			if (typeof opts.db === 'string') {
+				const db = this.getDB(opts.db);
+				return db.collection<T>(name);
+			} else {
+				return opts.db.collection<T>(name);
+			}
+		}
 		const db = this.getInstance();
 		if (!db) throw new Error('Database not initialized');
 		return db.collection<T>(name);
