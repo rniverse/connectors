@@ -1,6 +1,7 @@
 // lib/tools/redpanda.tool.ts
 // Redpanda connector using KafkaJS (Kafka-compatible)
 
+import { log } from '@rniverse/utils';
 import { Kafka } from 'kafkajs';
 import type {
 	RedpandaConnectorConfig,
@@ -38,17 +39,7 @@ export function initRedpanda(
 		...('kafka' in connection ? connection.kafka : {}),
 	});
 
-	// Warm up connection by creating and immediately disconnecting an admin client
-	const warmupAdmin = kafka.admin();
-	warmupAdmin
-		.connect()
-		.then(() => {
-			console.log('Redpanda warm-up successful');
-			return warmupAdmin.disconnect();
-		})
-		.catch((err: Error) => {
-			console.warn('Initial Redpanda connection failed', err);
-		});
+	log.info({ clientId, brokers }, 'Redpanda Kafka client created');
 
 	return kafka;
 }

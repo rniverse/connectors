@@ -22,7 +22,3 @@ export type SQLConnectorHostConfig = {
 } & Partial<SQLConnectorOptionsConfig>;
 
 export type SQLConnectorConfig = SQLConnectorURLConfig | SQLConnectorHostConfig;
-
-export interface SQLClient {
-	db: any;
-}

@@ -1,151 +1,144 @@
-# connectors
+# @rniverse/connectors
 
-A comprehensive TypeScript connector library for SQL (with Drizzle ORM), Redis, Redpanda (Kafka), and MongoDB.
+Production-ready TypeScript connectors for **PostgreSQL** (Drizzle ORM), **Redis**, **MongoDB**, and **Redpanda** (Kafka). Built for [Bun](https://bun.sh).
 
-## Installation
+> **Runtime:** Bun ≥ 1.x (uses `bun:SQL` and `bun:RedisClient` native APIs)
+
+## Install
 
 ```bash
-bun install
+bun add @rniverse/connectors
 ```
 
-# expected in root project package.json deps
+### Peer dependencies
 
-```
-
+```jsonc
+{
   "@rniverse/utils": "github:rniverse/utils#dist",
-  "drizzle-orm": "^0.44.7",
-  "kafkajs": "^2.2.4",
-  "mongodb": "^6.20.0"
-
-
+  "drizzle-orm": "^0.44.7",  // SQL only
+  "kafkajs": "^2.2.4",       // Redpanda only
+  "mongodb": "^6.20.0"       // MongoDB only
+}
 ```
 
-## Available Connectors
+## Lifecycle
 
-### 1. SQL Connector (with Drizzle ORM)
-- Raw SQL queries with `postgres` driver
-- Drizzle ORM for type-safe queries
-- Connection pooling with `pg-pool`
-- Transactions, aggregations, joins, CTEs, window functions
-- Tests: `bun test lib/test/sql.test.ts lib/test/sql-drizzle.test.ts`
+Every connector follows the same pattern:
 
-### 2. Redis Connector
-- Comprehensive Redis operations (strings, hashes, lists, sets, sorted sets)
-- Pub/Sub support
-- Connection health checks
-- Tests: `bun test lib/test/redis-comprehensive.test.ts`
+```
+new Connector(config) → await connector.connect() → use → await connector.close()
+```
 
-### 3. Redpanda Connector (Kafka-compatible)
-- Producer and consumer operations
-- Topic management
-- Offset management
-- Tests: `bun test lib/test/redpanda.test.ts`
+`connect()` is **mandatory** before any operation — calling methods without it throws.
 
-### 4. MongoDB Connector
-- Type-safe CRUD operations with generics
-- Aggregation pipeline support
-- Index management
-- Collection management
-- Text search capabilities
-- **Requirements**: MongoDB server must be running
-  - Local: `brew install mongodb-community && brew services start mongodb-community`
-  - Docker: `docker run -d -p 27017:27017 --name mongodb mongo`
-  - Or use MongoDB Atlas (cloud)
-- Tests: `bun test lib/test/mongodb.test.ts` (requires MongoDB at `mongodb://localhost:27017/testdb`)
+## Quick Start
 
-## Usage Examples
+### SQL (PostgreSQL + Drizzle ORM)
 
-### SQL with Drizzle ORM
 ```typescript
-import { SQLConnector } from '@connectors/core';
+import { SQLConnector } from '@rniverse/connectors';
+import { eq } from 'drizzle-orm';
 
-const sql = new SQLConnector({
-  host: 'localhost',
-  port: 5432,
-  database: 'mydb',
-  user: 'postgres',
-  password: 'password'
-});
+const sql = new SQLConnector({ url: 'postgres://user:pass@localhost:5432/mydb' });
+await sql.connect();
 
-// Drizzle ORM query
-const users = await sql.select().from(usersTable).where(eq(usersTable.age, 30));
+const orm = sql.getInstance();
+const users = await orm.select().from(usersTable).where(eq(usersTable.age, 30));
+
+// Raw SQL via Bun's tagged template
+const rows = await orm.$client`SELECT * FROM users WHERE age > ${25}`;
+
+await sql.close();
 ```
 
 ### Redis
+
 ```typescript
-import { RedisConnector } from '@connectors/core';
+import { RedisConnector } from '@rniverse/connectors';
 
-const redis = new RedisConnector({
-  host: 'localhost',
-  port: 6379
-});
+const redis = new RedisConnector({ url: 'redis://localhost:6379' });
+await redis.connect();
 
-await redis.set('key', 'value');
-const value = await redis.get('key');
+const client = redis.getInstance();
+await client.set('key', 'value');
+const value = await client.get('key');
+
+await redis.close();
 ```
 
 ### MongoDB
+
 ```typescript
-import { MongoDBConnector } from '@connectors/core';
+import { MongoDBConnector } from '@rniverse/connectors';
 
-const mongo = new MongoDBConnector({
-  url: 'mongodb://localhost:27017',
-  database: 'mydb'
-});
+interface User { name: string; email: string; age: number }
 
-// Type-safe operations
-interface User {
-  name: string;
-  email: string;
-  age: number;
-}
+const mongo = new MongoDBConnector({ url: 'mongodb://localhost:27017', database: 'mydb' });
+await mongo.connect();
 
-const result = await mongo.insertOne<User>('users', {
-  name: 'John',
-  email: 'john@example.com',
-  age: 30
-});
+await mongo.insertOne<User>('users', { name: 'Alice', email: 'alice@example.com', age: 28 });
+const result = await mongo.find<User>('users', { age: { $gte: 25 } });
+if (result.ok) console.log(result.data);
 
-const users = await mongo.find<User>('users', { age: { $gte: 25 } });
+await mongo.close();
 ```
 
 ### Redpanda (Kafka)
+
 ```typescript
-import { RedpandaConnector } from '@connectors/core';
+import { RedpandaConnector } from '@rniverse/connectors';
 
-const redpanda = new RedpandaConnector({
-  brokers: ['localhost:9092'],
-  clientId: 'my-app'
-});
+const rp = new RedpandaConnector({ url: 'localhost:9092' });
+await rp.connect();
 
-await redpanda.produce('my-topic', [{ value: 'message' }]);
+await rp.publish({ topic: 'events', messages: [{ value: JSON.stringify({ event: 'signup' }) }] });
+
+await rp.subscribe(
+  { topics: ['events'], groupId: 'my-group', fromBeginning: true },
+  async (payload) => console.log(payload.message.value?.toString()),
+);
+
+await rp.close();
 ```
 
-## Running Tests
+## Health Checks
 
-All tests (excluding MongoDB):
-```bash
-bun test lib/test/sql.test.ts lib/test/sql-drizzle.test.ts lib/test/redis-comprehensive.test.ts lib/test/redpanda.test.ts
+All connectors expose `health()` returning `{ ok: true }` or `{ ok: false, error }`:
+
+```typescript
+const h = await mongo.health();
+if (!h.ok) log.error({ error: h.error }, 'MongoDB down');
 ```
 
-MongoDB tests (requires MongoDB server):
-```bash
-bun test lib/test/mongodb.test.ts
+## Result Pattern
+
+MongoDB operations return a discriminated union — check `ok` before accessing data:
+
+```typescript
+const result = await mongo.findOne<User>('users', { email });
+if (result.ok) {
+  // result.data is typed
+} else {
+  // result.error is the caught exception
+}
 ```
 
 ## Project Structure
 
 ```
 lib/
-├── core/              # Connector implementations
-│   ├── sql.connector.ts
-│   ├── redis.connector.ts
-│   ├── redpanda.connector.ts
-│   └── mongodb.connector.ts
-├── tools/             # Client initialization utilities
-├── types/             # TypeScript type definitions
-├── utils/             # Logger and utilities
-└── test/              # Comprehensive test suites
+├── core/     # Connector classes (MongoDB, Redis, Redpanda, SQL)
+├── tools/    # Low-level factory functions (initMongoDB, initRedis, initORM, initRedpanda)
+└── types/    # Config type definitions
 ```
 
-This project was created using `bun init` in bun v1.3.1. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
+## Detailed Docs
+
+| Connector | Guide |
+|-----------|-------|
+| MongoDB   | [docs/mongodb.md](docs/mongodb.md) |
+| Redis     | [docs/redis.md](docs/redis.md) |
+| Redpanda  | [docs/redpanda.md](docs/redpanda.md) |
+| SQL       | [docs/sql.md](docs/sql.md) |
+
+Full reference with configuration, all methods, patterns, and troubleshooting: **[docs/README.md](docs/README.md)**

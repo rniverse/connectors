@@ -1,317 +1,410 @@
-# @rniverse/connectors
+# @rniverse/connectors — Full Reference
 
-A comprehensive TypeScript connector library for database and messaging systems, providing type-safe, production-ready clients for SQL (PostgreSQL with Drizzle ORM), Redis, MongoDB, and Redpanda (Kafka).
+Production-ready TypeScript connectors for PostgreSQL (Drizzle ORM), Redis, MongoDB, and Redpanda (Kafka).  
+**Runtime:** Bun ≥ 1.x (uses `bun:SQL` and `bun:RedisClient` native APIs).
 
 ## Table of Contents
 
-- [Installation](#installation)
-- [Available Connectors](#available-connectors)
+- [Install](#install)
+- [Lifecycle](#lifecycle)
 - [SQL Connector](#sql-connector)
 - [Redis Connector](#redis-connector)
 - [MongoDB Connector](#mongodb-connector)
 - [Redpanda Connector](#redpanda-connector)
-- [Configuration](#configuration)
+- [Low-Level Tools](#low-level-tools)
+- [Configuration Reference](#configuration-reference)
+- [Error Handling](#error-handling)
+- [Graceful Shutdown](#graceful-shutdown)
 - [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
 
-## Installation
+---
+
+## Install
 
 ```bash
-bun install
+bun add @rniverse/connectors
 ```
 
-### Dependencies
+Peer dependencies — add only what you need:
 
-Add these to your root project's `package.json`:
-
-```json
+```jsonc
 {
-  "dependencies": {
-    "@rniverse/utils": "github:rniverse/utils#dist",
-    "drizzle-orm": "^0.44.7",
-    "kafkajs": "^2.2.4",
-    "mongodb": "^6.20.0"
-  }
+  "@rniverse/utils": "github:rniverse/utils#dist",  // always required (logging)
+  "drizzle-orm": "^0.44.7",   // SQL
+  "kafkajs": "^2.2.4",        // Redpanda
+  "mongodb": "^6.20.0"        // MongoDB
 }
 ```
 
 ---
 
-## Available Connectors
+## Lifecycle
 
-### 1. SQL Connector (PostgreSQL with Drizzle ORM)
-- **Driver**: Bun's native SQL driver with Drizzle ORM
-- **Features**: Connection pooling, type-safe queries, transactions, raw SQL support
-- **Documentation**: [SQL Connector Guide](./sql.md)
-- **Tests**: `bun test lib/test/sql.test.ts lib/test/sql-drizzle.test.ts`
+All four connectors share the same lifecycle contract:
 
-### 2. Redis Connector
-- **Driver**: Bun's native Redis client
-- **Features**: All Redis data types, Pub/Sub, connection health checks, cursor operations
-- **Documentation**: [Redis Connector Guide](./redis.md)
-- **Tests**: `bun test lib/test/redis.test.ts`
+```
+new Connector(config)   // 1. Construct (no I/O)
+await connector.connect()  // 2. Connect + verify
+// … use …
+await connector.close()    // 3. Tear down
+```
 
-### 3. MongoDB Connector
-- **Driver**: Official MongoDB Node.js driver
-- **Features**: Type-safe CRUD, aggregation pipelines, index management, multi-database support
-- **Documentation**: [MongoDB Connector Guide](./mongodb.md)
-- **Tests**: `bun test lib/test/mongodb.test.ts`
-- **Requirements**: MongoDB server must be running
-
-### 4. Redpanda Connector (Kafka-compatible)
-- **Driver**: KafkaJS
-- **Features**: Producer/consumer, topic management, multi-topic subscriptions
-- **Documentation**: [Redpanda Connector Guide](./redpanda.md)
-- **Tests**: `bun test lib/test/redpanda.test.ts`
+- `connect()` is **mandatory** — operations throw `"not connected — call connect() first"` without it.
+- `connect()` is **idempotent** — safe to call multiple times.
+- `health()` returns `{ ok: true }` or `{ ok: false, error }` — use for readiness probes.
+- `close()` releases connections and resets state — the instance can be reconnected after.
 
 ---
 
-## Quick Start
+## SQL Connector
 
-### SQL with Drizzle ORM
+**Driver:** `bun:SQL` + Drizzle ORM  
+**Detailed guide:** [sql.md](./sql.md)
 
 ```typescript
 import { SQLConnector } from '@rniverse/connectors';
-import { eq } from 'drizzle-orm';
+import { eq, desc } from 'drizzle-orm';
 
-const sql = new SQLConnector({
-  url: 'postgres://user:pass@localhost:5432/mydb'
-});
+const sql = new SQLConnector({ url: 'postgres://user:pass@localhost:5432/mydb' });
+await sql.connect();
 
-// Health check
-await sql.health();
+const orm = sql.getInstance(); // Drizzle ORM instance
 
-// Type-safe Drizzle queries
-const client = sql.getInstance();
-const users = await client.select().from(usersTable).where(eq(usersTable.age, 30));
+// Type-safe queries
+const users = await orm.select().from(usersTable).where(eq(usersTable.age, 30));
+const recent = await orm.select().from(usersTable).orderBy(desc(usersTable.createdAt)).limit(10);
 
-// Raw SQL
-const results = await client.$client`SELECT * FROM users WHERE age > 25`;
+// Inserts
+const [user] = await orm.insert(usersTable).values({ name: 'Alice', email: 'a@b.com' }).returning();
+
+// Raw SQL via Bun tagged template
+const rows = await orm.$client`SELECT count(*) FROM users WHERE age > ${25}`;
+
+await sql.close();
 ```
 
-### Redis
+### Host-based config
+
+```typescript
+const sql = new SQLConnector({
+  host: 'localhost',
+  port: 5432,
+  database: 'mydb',
+  user: 'postgres',
+  password: 'secret',
+  max: 20,             // pool size
+  idleTimeout: 30,     // seconds
+});
+```
+
+### Drizzle Kit (migrations)
+
+Schema generation, migrations, introspection, and visual studio via CLI:
+
+```bash
+bun run db:generate --config=lib/migrations/myapp.config.ts   # generate SQL from schema
+bun run db:migrate  --config=lib/migrations/myapp.config.ts   # apply pending migrations
+bun run db:push     --config=lib/migrations/myapp.config.ts   # push schema directly
+bun run db:introspect --config=lib/migrations/myapp.config.ts # pull DB → Drizzle schema
+bun run db:studio   --config=lib/migrations/myapp.config.ts   # visual DB browser
+```
+
+See [sql.md — Drizzle Kit](./sql.md#drizzle-kit-migrations--schema-management) for full setup, config format, and multi-database workflow.
+
+---
+
+## Redis Connector
+
+**Driver:** `bun:RedisClient` (native)  
+**Detailed guide:** [redis.md](./redis.md)
 
 ```typescript
 import { RedisConnector } from '@rniverse/connectors';
 
-const redis = new RedisConnector({
-  url: 'redis://localhost:6379'
-});
+const redis = new RedisConnector({ url: 'redis://localhost:6379' });
+await redis.connect();
 
-// Health check
-await redis.health();
+const client = redis.getInstance(); // Bun RedisClient
 
-// Operations
-const client = redis.getInstance();
+// Strings
 await client.set('key', 'value');
-const value = await client.get('key');
+const val = await client.get('key');
 
-// Hash operations
+// Hashes
 await client.hset('user:1', 'name', 'John');
-await client.hget('user:1', 'name');
+const name = await client.hget('user:1', 'name');
+
+// Sets
+await client.sadd('tags', 'ts', 'bun');
+const members = await client.smembers('tags');
+
+// Commands via send()
+await client.send('EXPIRE', ['key', '60']);
+const ttl = await client.send('TTL', ['key']);
+
+await redis.close();
 ```
 
-### MongoDB
+---
+
+## MongoDB Connector
+
+**Driver:** Official `mongodb` driver  
+**Detailed guide:** [mongodb.md](./mongodb.md)
 
 ```typescript
 import { MongoDBConnector } from '@rniverse/connectors';
 
-const mongo = new MongoDBConnector({
-  url: 'mongodb://localhost:27017',
-  database: 'mydb'
-});
+interface User { name: string; email: string; age: number }
 
-// Health check
-await mongo.health();
+const mongo = new MongoDBConnector({ url: 'mongodb://localhost:27017', database: 'mydb' });
+await mongo.connect();
 
-// Type-safe operations
-interface User {
-  username: string;
-  email: string;
-  age: number;
-}
+// Insert
+await mongo.insertOne<User>('users', { name: 'Alice', email: 'alice@co.com', age: 28 });
 
-const result = await mongo.insertOne<User>('users', {
-  username: 'john',
-  email: 'john@example.com',
-  age: 30
-});
+// Find
+const result = await mongo.find<User>('users', { age: { $gte: 25 } });
+if (result.ok) console.log(result.data); // User[]
 
-const users = await mongo.find<User>('users', { age: { $gte: 25 } });
+// Update
+await mongo.updateOne<User>('users', { email: 'alice@co.com' }, { $set: { age: 29 } });
+
+// Delete
+await mongo.deleteMany<User>('users', { age: { $lt: 18 } });
+
+// Aggregation
+const agg = await mongo.aggregate<User>('users', [
+  { $group: { _id: null, avgAge: { $avg: '$age' } } },
+]);
+
+// Cross-database access
+const other = mongo.getCollection<User>('users', { db: 'other_db' });
+
+await mongo.close();
 ```
 
-### Redpanda (Kafka)
+### Result pattern
+
+Every MongoDB CRUD method returns `{ ok: true, data }` or `{ ok: false, error }`:
+
+```typescript
+const r = await mongo.findOne<User>('users', { email });
+if (r.ok) {
+  // r.data: User | null
+} else {
+  // r.error: caught exception
+}
+```
+
+---
+
+## Redpanda Connector
+
+**Driver:** KafkaJS (Kafka-compatible)  
+**Detailed guide:** [redpanda.md](./redpanda.md)
 
 ```typescript
 import { RedpandaConnector } from '@rniverse/connectors';
 
-const redpanda = new RedpandaConnector({
-  url: 'localhost:9092'
-});
+const rp = new RedpandaConnector({ url: 'localhost:9092' });
+await rp.connect();
 
-// Health check
-await redpanda.health();
-
-// Create topic
-await redpanda.createTopic({
-  topic: 'my-topic',
-  numPartitions: 3,
-  replicationFactor: 1
-});
+// Topic management
+await rp.createTopic({ topic: 'events', numPartitions: 3 });
+const topics = await rp.listTopics();
 
 // Publish
-await redpanda.publish({
-  topic: 'my-topic',
-  messages: [{ value: JSON.stringify({ data: 'message' }) }]
+await rp.publish({
+  topic: 'events',
+  messages: [
+    { key: 'user-1', value: JSON.stringify({ type: 'signup', ts: Date.now() }) },
+  ],
 });
 
 // Subscribe
-await redpanda.subscribe(
-  {
-    topics: ['my-topic'],
-    groupId: 'my-consumer-group',
-    fromBeginning: true
-  },
+await rp.subscribe(
+  { topics: ['events'], groupId: 'worker', fromBeginning: true },
   async (payload) => {
-    console.log(payload.message.value?.toString());
-  }
+    const event = JSON.parse(payload.message.value!.toString());
+    console.log(event);
+  },
 );
+
+// Cleanup
+await rp.unsubscribe(); // stops consumer only
+await rp.close();       // disconnects producer + consumer + admin
+```
+
+### Brokers array config
+
+```typescript
+const rp = new RedpandaConnector({
+  brokers: ['broker1:9092', 'broker2:9092'],
+  clientId: 'my-service',
+  ssl: true,
+  sasl: { mechanism: 'scram-sha-256', username: 'user', password: 'pass' },
+});
 ```
 
 ---
 
-## Configuration
+## Low-Level Tools
 
-All connectors support health checks and connection management:
+Factory functions used internally by the connectors. Useful when you need the raw client without the connector wrapper.
+
+| Function | Returns | Used by |
+|----------|---------|---------|
+| `initMongoDB(config)` | `Promise<{ client: MongoClient, db: Db }>` | `MongoDBConnector` |
+| `initRedis(config)` | `RedisClient` | `RedisConnector` |
+| `initORM(config)` | `BunSQLDrizzle` | `SQLConnector` |
+| `initRedpanda(config)` | `Kafka` | `RedpandaConnector` |
+| `closeMongoDB(client)` | `Promise<void>` | `MongoDBConnector.close()` |
 
 ```typescript
-// Check connection health
-const health = await connector.health();
-console.log(health.ok); // true/false
-
-// Close connections
-await connector.close();
+import { initMongoDB, initRedis, initORM, initRedpanda } from '@rniverse/connectors';
 ```
 
-### SQL Configuration Options
+---
+
+## Configuration Reference
+
+### SQL — `SQLConnectorConfig`
 
 ```typescript
-type SQLConnectorConfig = {
-  // URL format
-  url: string;
-  // OR Host-based config
-  host: string;
-  port: number;
-  database: string;
-  user: string;
-  password: string;
-  
-  // Pool options
-  max?: number;              // default: 20
-  idleTimeout?: number;      // default: 30 seconds
-  connectionTimeout?: number; // default: 30 seconds
-  maxLifetime?: number;      // default: 3600 seconds
-  prepare?: boolean;         // default: true
-};
+// URL-based
+{ url: string } & Partial<SQLConnectorOptionsConfig>
+
+// Host-based
+{ host: string; port: number; database: string; user: string; password: string }
+  & Partial<SQLConnectorOptionsConfig>
+
+// Pool options (defaults)
+{
+  max: 20,               // pool size
+  idleTimeout: 30,       // seconds
+  maxLifetime: 3600,     // seconds
+  connectionTimeout: 30, // seconds
+  prepare: true,         // prepared statements
+}
 ```
 
-### Redis Configuration Options
+### Redis — `RedisConnectorConfig`
 
 ```typescript
-type RedisConnectorConfig = {
-  url: string;
-  
-  // Connection options
-  connectionTimeout?: number; // default: 10000ms
-  idleTimeout?: number;       // default: 30000ms
-  autoReconnect?: boolean;    // default: true
-  maxRetries?: number;        // default: 10
-  enableOfflineQueue?: boolean; // default: true
+{
+  url: string;                    // e.g. 'redis://localhost:6379'
+  connectionTimeout?: number;     // ms (default: 10000)
+  idleTimeout?: number;           // ms (default: 30000)
+  autoReconnect?: boolean;        // default: true
+  maxRetries?: number;            // default: 10
+  enableOfflineQueue?: boolean;   // default: true
   enableAutoPipelining?: boolean; // default: true
-  
-  // TLS
-  tls?: boolean | {
-    rejectUnauthorized?: boolean;
-    ca?: string;
-    cert?: string;
-    key?: string;
-  };
-};
+  tls?: boolean | { rejectUnauthorized?: boolean; ca?: string; cert?: string; key?: string };
+}
 ```
 
-### MongoDB Configuration Options
+### MongoDB — `MongoDBConnectorConfig`
 
 ```typescript
-type MongoDBConnectorConfig = {
-  url: string;
-  database?: string; // Optional if included in URL
-  
+{
+  url: string;           // e.g. 'mongodb://localhost:27017'
+  database?: string;     // optional if included in URL
   options?: {
-    maxPoolSize?: number;      // default: 10
-    minPoolSize?: number;      // default: 2
-    connectTimeoutMS?: number; // default: 10000
-    socketTimeoutMS?: number;  // default: 45000
+    maxPoolSize?: number;              // default: 10
+    minPoolSize?: number;              // default: 2
+    connectTimeoutMS?: number;         // default: 10000
+    socketTimeoutMS?: number;          // default: 45000
     serverSelectionTimeoutMS?: number; // default: 10000
-    retryWrites?: boolean;     // default: true
-    retryReads?: boolean;      // default: true
+    retryWrites?: boolean;            // default: true
+    retryReads?: boolean;             // default: true
     appName?: string;
   };
-};
+}
 ```
 
-### Redpanda Configuration Options
+### Redpanda — `RedpandaConnectorConfig`
 
 ```typescript
-type RedpandaConnectorConfig = {
-  // URL format
-  url: string; // 'broker1:9092,broker2:9092'
-  // OR brokers array
+// URL format
+{ url: string; clientId?: string; connectionTimeout?: number; requestTimeout?: number }
+
+// Brokers format
+{
   brokers: string[];
-  
-  clientId?: string;
-  connectionTimeout?: number; // default: 10000
-  requestTimeout?: number;    // default: 30000
-  
-  // SSL/TLS
-  ssl?: boolean | {
-    rejectUnauthorized?: boolean;
-    ca?: string[];
-    cert?: string;
-    key?: string;
-  };
-  
-  // SASL Authentication
-  sasl?: {
-    mechanism: 'plain' | 'scram-sha-256' | 'scram-sha-512';
-    username: string;
-    password: string;
-  };
-  
-  // Advanced Kafka configs
-  kafka?: Partial<KafkaConfig>;
+  clientId?: string;                // default: 'redpanda-connector'
+  connectionTimeout?: number;       // ms (default: 10000)
+  requestTimeout?: number;          // ms (default: 30000)
+  ssl?: boolean | TlsConfig;
+  sasl?: { mechanism: 'plain' | 'scram-sha-256' | 'scram-sha-512'; username: string; password: string };
+  kafka?: Partial<KafkaConfig>;     // KafkaJS overrides
   producer?: Partial<ProducerConfig>;
   consumer?: Partial<ConsumerConfig>;
   admin?: Partial<AdminConfig>;
-};
+}
 ```
 
 ---
 
-## Environment Variables
+## Error Handling
 
-Recommended environment variables for testing:
+### MongoDB (result union)
 
-```bash
-# SQL
-POSTGRES_TEST_URL=postgres://user:pass@localhost:5432/testdb
+```typescript
+const r = await mongo.findOne<User>('users', { email });
+if (!r.ok) {
+  log.error({ error: r.error }, 'lookup failed');
+  return;
+}
+// r.data is safely typed here
+```
 
-# Redis
-REDIS_URL=redis://localhost:6379
+### Other connectors (standard throw)
 
-# MongoDB
-MONGODB_TEST_URL=mongodb://localhost:27017/testdb
+Redis, SQL, and Redpanda operations throw on failure — wrap in try/catch:
 
-# Redpanda
-REDPANDA_URL=localhost:9092
+```typescript
+try {
+  await client.set('key', 'value');
+} catch (err) {
+  log.error({ error: err }, 'redis set failed');
+}
+```
+
+Redpanda's topic/publish/subscribe methods return `{ ok, data/error }` like MongoDB.
+
+### connect() failures
+
+All connectors throw from `connect()` on failure. MongoDB resets its init promise so a retry is possible:
+
+```typescript
+try {
+  await mongo.connect();
+} catch {
+  // retry after delay
+  await Bun.sleep(5000);
+  await mongo.connect(); // re-attempts connection
+}
+```
+
+---
+
+## Graceful Shutdown
+
+```typescript
+const shutdown = async () => {
+  await Promise.allSettled([
+    sql.close(),
+    redis.close(),
+    mongo.close(),
+    rp.close(),
+  ]);
+  process.exit(0);
+};
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 ```
 
 ---
@@ -320,375 +413,87 @@ REDPANDA_URL=localhost:9092
 
 ### Prerequisites
 
-**SQL (PostgreSQL):**
 ```bash
-# Docker
-docker run -d -p 5432:5432 --name postgres \
-  -e POSTGRES_PASSWORD=password \
-  -e POSTGRES_DB=testdb \
-  postgres:15
+# PostgreSQL
+docker run -d -p 5432:5432 --name pg -e POSTGRES_PASSWORD=password -e POSTGRES_DB=testdb postgres:15
 
-# Or local installation
-brew install postgresql@15
-brew services start postgresql@15
-```
-
-**Redis:**
-```bash
-# Docker
+# Redis
 docker run -d -p 6379:6379 --name redis redis:7
 
-# Or local installation
-brew install redis
-brew services start redis
-```
+# MongoDB
+docker run -d -p 27017:27017 --name mongo mongo:7
 
-**MongoDB:**
-```bash
-# Docker
-docker run -d -p 27017:27017 --name mongodb mongo:7
-
-# Or local installation
-brew install mongodb-community
-brew services start mongodb-community
-
-# Or use MongoDB Atlas (cloud)
-```
-
-**Redpanda:**
-```bash
-# Docker
-docker run -d -p 9092:9092 --name redpanda \
-  vectorized/redpanda:latest \
+# Redpanda
+docker run -d -p 9092:9092 --name redpanda vectorized/redpanda:latest \
   redpanda start --smp 1 --memory 1G --overprovisioned \
-  --kafka-addr 0.0.0.0:9092 \
-  --advertise-kafka-addr localhost:9092
-
-# Or local installation (macOS)
-brew install redpanda-data/tap/redpanda
-rpk redpanda start
+  --kafka-addr 0.0.0.0:9092 --advertise-kafka-addr localhost:9092
 ```
 
-### Run Tests
+### Run
 
 ```bash
-# All tests (requires all services)
-bun test
-
-# Individual connector tests
-bun test lib/test/sql.test.ts
-bun test lib/test/sql-drizzle.test.ts
-bun test lib/test/redis.test.ts
-bun test lib/test/mongodb.test.ts
-bun test lib/test/mongodb-multi-connection.test.ts
-bun test lib/test/redpanda.test.ts
-
-# All tests except MongoDB
-bun test lib/test/sql.test.ts lib/test/sql-drizzle.test.ts lib/test/redis.test.ts lib/test/redpanda.test.ts
+bun test                             # all tests
+bun test lib/test/sql.test.ts        # SQL raw
+bun test lib/test/sql-drizzle.test.ts # SQL Drizzle
+bun test lib/test/redis.test.ts      # Redis
+bun test lib/test/mongodb.test.ts    # MongoDB
+bun test lib/test/redpanda.test.ts   # Redpanda
 ```
 
-### Test Coverage
+### Environment variables
 
-- **SQL**: 50+ tests covering CRUD, joins, aggregations, transactions, CTEs, window functions, cursors
-- **Redis**: 30+ tests covering all data types, Pub/Sub, cursors, transactions
-- **MongoDB**: 40+ tests covering CRUD, aggregations, indexes, cursors, multi-database
-- **Redpanda**: 10+ tests covering topics, publishing, consuming, multi-topic subscriptions
-
----
-
-## Project Structure
-
-```
-connectors/
-├── docs/               # Documentation
-│   ├── README.md
-│   ├── sql.md
-│   ├── redis.md
-│   ├── mongodb.md
-│   └── redpanda.md
-├── lib/
-│   ├── core/          # Connector implementations
-│   │   ├── sql.connector.ts
-│   │   ├── redis.connector.ts
-│   │   ├── mongodb.connector.ts
-│   │   └── redpanda.connector.ts
-│   ├── tools/         # Client initialization
-│   │   ├── drizzle.tool.ts
-│   │   ├── redis.tool.ts
-│   │   ├── mongodb.tool.ts
-│   │   └── redpanda.tool.ts
-│   ├── types/         # TypeScript types
-│   │   ├── sql.type.ts
-│   │   ├── redis.type.ts
-│   │   ├── mongodb.type.ts
-│   │   └── redpanda.type.ts
-│   └── test/          # Test suites
-│       ├── sql.test.ts
-│       ├── sql-drizzle.test.ts
-│       ├── redis.test.ts
-│       ├── mongodb.test.ts
-│       ├── mongodb-multi-connection.test.ts
-│       ├── redpanda.test.ts
-│       └── data/      # Test data and schemas
-```
-
----
-
-## Features by Connector
-
-### SQL Connector
-✅ Raw SQL queries  
-✅ Drizzle ORM type-safe queries  
-✅ Connection pooling  
-✅ Transactions  
-✅ Joins (INNER, LEFT, RIGHT)  
-✅ Aggregations (COUNT, SUM, AVG, GROUP BY)  
-✅ Window functions  
-✅ CTEs (Common Table Expressions)  
-✅ Subqueries  
-✅ Cursors (server-side)  
-✅ UPSERT operations  
-
-### Redis Connector
-✅ String operations (GET, SET, INCR, DECR)  
-✅ Hash operations (HSET, HGET, HMGET)  
-✅ List operations (LPUSH, RPUSH, LRANGE)  
-✅ Set operations (SADD, SMEMBERS, SINTER)  
-✅ Sorted Set operations (ZADD, ZRANGE, ZRANK)  
-✅ Pub/Sub messaging  
-✅ Cursor operations (SCAN, HSCAN, SSCAN, ZSCAN)  
-✅ Expiration (TTL, EXPIRE)  
-✅ Transactions (MULTI/EXEC)  
-
-### MongoDB Connector
-✅ Type-safe CRUD operations  
-✅ Aggregation pipelines  
-✅ Index management  
-✅ Text search  
-✅ Cursor operations  
-✅ Multi-database support  
-✅ Collection management  
-✅ Bulk operations  
-✅ Transactions (replica sets)  
-
-### Redpanda Connector
-✅ Topic management (create, list, delete)  
-✅ Producer operations  
-✅ Consumer groups  
-✅ Multi-topic subscriptions  
-✅ Offset management  
-✅ Topic metadata  
-✅ Message headers  
-✅ Partitioning  
-
----
-
-## Best Practices
-
-### Connection Management
-
-```typescript
-// ✅ Good: Reuse connector instances
-const connector = new SQLConnector(config);
-// Use throughout application lifecycle
-
-// ❌ Bad: Creating new instances per request
-app.get('/users', async (req, res) => {
-  const connector = new SQLConnector(config); // Don't do this!
-});
-```
-
-### Error Handling
-
-```typescript
-// All operations return { ok, result/error }
-const result = await mongo.findOne('users', { _id: userId });
-
-if (result.ok) {
-  console.log(result.data);
-} else {
-  console.error(result.error);
-}
-```
-
-### Type Safety
-
-```typescript
-// ✅ Good: Define interfaces for type safety
-interface User {
-  username: string;
-  email: string;
-  age: number;
-}
-
-const users = await mongo.find<User>('users', { age: { $gte: 25 } });
-// users.data is typed as User[]
-
-// ✅ Good: Use Drizzle schema for SQL
-import { users } from './schema';
-const result = await client.select().from(users);
-```
-
-### Resource Cleanup
-
-```typescript
-// Always close connections when shutting down
-process.on('SIGTERM', async () => {
-  await sqlConnector.close?.();
-  await redisConnector.close();
-  await mongoConnector.close();
-  await redpandaConnector.close();
-  process.exit(0);
-});
+```bash
+POSTGRES_TEST_URL=postgres://user:pass@localhost:5432/testdb
+REDIS_URL=redis://localhost:6379
+MONGODB_TEST_URL=mongodb://localhost:27017/testdb
+REDPANDA_URL=localhost:9092
 ```
 
 ---
 
 ## Troubleshooting
 
-### SQL Connection Issues
+### "not connected — call connect() first"
+
+You called an operation before `await connector.connect()`. Every connector requires an explicit connect step.
+
+### SQL timeouts
+
+Increase `connectionTimeout` (seconds):
 
 ```typescript
-// Check health
-const health = await sql.health();
-if (!health.ok) {
-  console.error('SQL connection failed');
-}
-
-// Increase timeout
-const sql = new SQLConnector({
-  url: 'postgres://...',
-  connectionTimeout: 60 // seconds
-});
+new SQLConnector({ url: '...', connectionTimeout: 60 });
 ```
 
-### Redis Connection Issues
+### Redis won't reconnect
+
+Check `autoReconnect` and `maxRetries`:
 
 ```typescript
-// Enable auto-reconnect
-const redis = new RedisConnector({
-  url: 'redis://localhost:6379',
-  autoReconnect: true,
-  maxRetries: 10
-});
+new RedisConnector({ url: '...', autoReconnect: true, maxRetries: 20 });
 ```
 
-### MongoDB Connection Issues
+### MongoDB server selection timeout
+
+The default is 10 s. Increase for slow networks:
 
 ```typescript
-// Increase server selection timeout
-const mongo = new MongoDBConnector({
-  url: 'mongodb://localhost:27017',
-  options: {
-    serverSelectionTimeoutMS: 30000
-  }
-});
+new MongoDBConnector({ url: '...', options: { serverSelectionTimeoutMS: 30000 } });
 ```
 
-### Redpanda Connection Issues
+### Redpanda consumer not receiving
 
-```typescript
-// Increase timeouts
-const redpanda = new RedpandaConnector({
-  url: 'localhost:9092',
-  connectionTimeout: 20000,
-  requestTimeout: 60000
-});
-```
+- Verify the topic exists: `await rp.listTopics()`
+- Check `fromBeginning: true` if you need historical messages
+- Ensure `groupId` is unique per logical consumer group
 
 ---
 
-## Migration from Other Libraries
+## Connector Guides
 
-### From `pg` to SQL Connector
-
-```typescript
-// Before (pg)
-const pool = new Pool({ ... });
-const result = await pool.query('SELECT * FROM users WHERE age > $1', [25]);
-
-// After (SQL Connector)
-const sql = new SQLConnector({ ... });
-const client = sql.getInstance();
-const result = await client.$client`SELECT * FROM users WHERE age > ${25}`;
-```
-
-### From `ioredis` to Redis Connector
-
-```typescript
-// Before (ioredis)
-const redis = new Redis({ host: 'localhost', port: 6379 });
-await redis.set('key', 'value');
-
-// After (Redis Connector)
-const redis = new RedisConnector({ url: 'redis://localhost:6379' });
-const client = redis.getInstance();
-await client.set('key', 'value');
-```
-
-### From native `mongodb` to MongoDB Connector
-
-```typescript
-// Before (native)
-const client = new MongoClient(url);
-await client.connect();
-const db = client.db('mydb');
-const users = db.collection('users');
-const result = await users.findOne({ _id: userId });
-
-// After (MongoDB Connector)
-const mongo = new MongoDBConnector({ url, database: 'mydb' });
-const result = await mongo.findOne('users', { _id: userId });
-```
-
----
-
-## Performance Tips
-
-### SQL
-- Use connection pooling (enabled by default)
-- Use prepared statements (enabled by default)
-- Batch inserts with Drizzle's `.values(array)`
-- Use indexes on frequently queried columns
-
-### Redis
-- Enable auto-pipelining (enabled by default)
-- Use `MGET`/`MSET` for batch operations
-- Use cursors (SCAN) instead of KEYS
-- Set appropriate TTL for cached data
-
-### MongoDB
-- Create indexes for frequent queries
-- Use projection to limit returned fields
-- Use aggregation pipelines for complex queries
-- Batch operations with `insertMany`, `updateMany`
-
-### Redpanda
-- Use batch publishing
-- Configure appropriate partition count
-- Use consumer groups for parallel processing
-- Set appropriate `maxBytes` for fetching
-
----
-
-## License
-
-Private package for internal use.
-
----
-
-## Support
-
-For issues or questions:
-1. Check the detailed connector guides in [`docs/`](.)
-2. Review test files in [`lib/test/`](../lib/test/)
-3. Contact the development team
-
----
-
-## Related Documentation
-
-- [SQL Connector Guide](./sql.md)
-- [Redis Connector Guide](./redis.md)
-- [MongoDB Connector Guide](./mongodb.md)
-- [Redpanda Connector Guide](./redpanda.md)
+| Connector | Guide | Features |
+|-----------|-------|----------|
+| SQL       | [sql.md](./sql.md) | Drizzle ORM, raw SQL, pooling, transactions, joins, CTEs, window functions |
+| Redis     | [redis.md](./redis.md) | All data types, Pub/Sub, SCAN, TTL, pipelining |
+| MongoDB   | [mongodb.md](./mongodb.md) | Typed CRUD, aggregation, indexes, multi-database, cursors |
+| Redpanda  | [redpanda.md](./redpanda.md) | Topics, producer, consumer groups, headers, DLQ patterns |

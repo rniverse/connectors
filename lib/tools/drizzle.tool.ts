@@ -1,7 +1,6 @@
 // lib/tools/drizzle.tool.ts
 // ref: https://bun.com/docs/runtime/sql#postgresql-options
 
-import { log } from '@rniverse/utils';
 import { SQL as BunSQL } from 'bun';
 import { drizzle as createORM } from 'drizzle-orm/bun-sql';
 import type {
@@ -10,7 +9,7 @@ import type {
 } from 'lib/types/sql.type';
 
 export function initORM(connection: SQLConnectorConfig) {
-	const { url, ...rest } = connection;
+	const { url, ...rest } = connection as { url?: string } & Record<string, unknown>;
 
 	// Default pool options (timeouts in seconds for Bun SQL)
 	const defaults: Partial<SQLConnectorOptionsConfig> = {
@@ -23,22 +22,12 @@ export function initORM(connection: SQLConnectorConfig) {
 
 	let bunSQLClient: BunSQL;
 	if (typeof url === 'string' && url.length > 0) {
-		// Merge defaults with URL connection
 		const options = { ...defaults, ...rest };
 		bunSQLClient = new BunSQL(url, options);
 	} else {
-		// Merge defaults with host-based config
 		const config = { ...defaults, ...rest };
 		bunSQLClient = new BunSQL(config);
 	}
 
-	// Create ORM client
-	const ormClient = createORM(bunSQLClient);
-
-	// Warm up one connection using the BunSQL client directly
-	bunSQLClient`SELECT 1`
-		.then(() => log.info('DB warm-up successful'))
-		.catch((err) => log.warn('Initial DB ping failed', err));
-
-	return ormClient;
+	return createORM(bunSQLClient);
 }

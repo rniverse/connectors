@@ -37,7 +37,7 @@ export async function initMongoDB(config: MongoDBConnectorConfig) {
 
 		return { client: mongoClient, db: database };
 	} catch (error) {
-		log.error(`Failed to initialize MongoDB: ${JSON.stringify(error)}`);
+		log.error({ error }, 'Failed to initialize MongoDB');
 		throw error;
 	}
 }

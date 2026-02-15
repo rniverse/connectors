@@ -1,29 +1,60 @@
-# MongoDB Connector Guide
+# MongoDB Connector
 
-Type-safe MongoDB connector with full CRUD operations and aggregation support.
+Type-safe MongoDB connector with full CRUD, aggregation pipelines, index management, and multi-database support.
 
-## Configuration
+**Driver:** Official `mongodb` Node.js driver  
+**Peer dep:** `mongodb ^6.20.0`
+
+## Setup
 
 ```typescript
 import { MongoDBConnector } from '@rniverse/connectors';
 
 const mongo = new MongoDBConnector({
   url: 'mongodb://localhost:27017',
-  database: 'mydb'
+  database: 'mydb',
+  options: {
+    maxPoolSize: 10,              // default
+    minPoolSize: 2,
+    connectTimeoutMS: 10000,
+    socketTimeoutMS: 45000,
+    serverSelectionTimeoutMS: 10000,
+    retryWrites: true,
+    retryReads: true,
+    appName: 'my-service',
+  },
 });
+
+await mongo.connect(); // mandatory — verifies via admin ping
 ```
 
-## Basic Usage
+`connect()` is idempotent and resets on failure so retries work:
 
 ```typescript
-// Health check
-const health = await mongo.health();
+try { await mongo.connect(); }
+catch { await Bun.sleep(3000); await mongo.connect(); }
+```
 
-// Get database
-const db = mongo.getInstance();
+## Health Check
 
-// Get collection
-const collection = mongo.getCollection<User>('users');
+```typescript
+const h = await mongo.health(); // { ok: true, result } | { ok: false, error }
+```
+
+## Result Pattern
+
+Every CRUD method returns a discriminated union:
+
+```typescript
+type Ok<T>  = { ok: true;  data: T };
+type Err     = { ok: false; error: unknown };
+
+const r = await mongo.findOne<User>('users', { email });
+if (r.ok) {
+  r.data; // User | null
+} else {
+  r.error; // the caught exception
+}
 ```
 
 ## CRUD Operations
@@ -31,149 +62,178 @@ const collection = mongo.getCollection<User>('users');
 ### Find
 
 ```typescript
-interface User {
-  username: string;
-  email: string;
-  age: number;
-}
+interface User { name: string; email: string; age: number }
 
 // Find one
-const result = await mongo.findOne<User>('users', { username: 'alice' });
-if (result.ok && result.data) {
-  console.log(result.data);
-}
+const r = await mongo.findOne<User>('users', { name: 'Alice' });
 
 // Find many
-const users = await mongo.find<User>('users', { age: { $gte: 18 } });
+const all = await mongo.find<User>('users', { age: { $gte: 18 } });
 
 // With options
 const recent = await mongo.find<User>(
   'users',
   {},
-  {
-    sort: { createdAt: -1 },
-    limit: 10,
-    projection: { username: 1, email: 1 }
-  }
+  { sort: { createdAt: -1 }, limit: 10, projection: { name: 1, email: 1 } },
 );
 ```
 
 ### Insert
 
 ```typescript
-// Insert one
-const result = await mongo.insertOne<User>('users', {
-  username: 'john',
-  email: 'john@example.com',
-  age: 30
+// One
+const r = await mongo.insertOne<User>('users', {
+  name: 'Alice', email: 'alice@co.com', age: 28,
 });
+if (r.ok) console.log(r.data.insertedId);
 
-// Insert many
-const result = await mongo.insertMany<User>('users', [
-  { username: 'alice', email: 'alice@example.com', age: 25 },
-  { username: 'bob', email: 'bob@example.com', age: 35 }
+// Many
+const batch = await mongo.insertMany<User>('users', [
+  { name: 'Bob', email: 'bob@co.com', age: 32 },
+  { name: 'Eve', email: 'eve@co.com', age: 24 },
 ]);
+if (batch.ok) console.log(batch.data.insertedCount);
 ```
 
 ### Update
 
 ```typescript
-// Update one
-const result = await mongo.updateOne<User>(
-  'users',
-  { username: 'alice' },
-  { $set: { age: 26 } }
-);
+// One
+await mongo.updateOne<User>('users', { email: 'alice@co.com' }, { $set: { age: 29 } });
 
-// Update many
-await mongo.updateMany<User>(
-  'users',
-  { age: { $lt: 18 } },
-  { $set: { status: 'minor' } }
-);
+// Many
+await mongo.updateMany<User>('users', { age: { $lt: 18 } }, { $set: { status: 'minor' } });
 ```
 
 ### Delete
 
 ```typescript
-// Delete one
-await mongo.deleteOne<User>('users', { username: 'alice' });
-
-// Delete many
+await mongo.deleteOne<User>('users', { email: 'alice@co.com' });
 await mongo.deleteMany<User>('users', { age: { $lt: 18 } });
+```
+
+### Count
+
+```typescript
+const r = await mongo.countDocuments<User>('users', { age: { $gte: 25 } });
+if (r.ok) console.log(r.data); // number
 ```
 
 ## Aggregation Pipelines
 
 ```typescript
-const result = await mongo.aggregate<Product>('products', [
-  { $match: { category: 'Electronics' } },
-  {
-    $group: {
-      _id: '$category',
-      totalStock: { $sum: '$stock' },
-      avgPrice: { $avg: '$price' },
-      count: { $sum: 1 }
-    }
-  },
-  { $sort: { totalStock: -1 } }
+const r = await mongo.aggregate<User>('orders', [
+  { $match: { status: 'completed' } },
+  { $group: { _id: '$customerId', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+  { $sort: { total: -1 } },
+  { $limit: 10 },
+]);
+if (r.ok) console.log(r.data); // Document[]
+```
+
+### Lookup (join)
+
+```typescript
+await mongo.aggregate('orders', [
+  { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
+  { $unwind: '$user' },
+  { $project: { orderId: 1, amount: 1, 'user.name': 1 } },
 ]);
 ```
 
 ## Index Management
 
 ```typescript
-// Create index
-const result = await mongo.createIndex<User>(
-  'users',
-  { email: 1 },
-  { unique: true, name: 'email_unique_idx' }
-);
+// Unique index
+await mongo.createIndex<User>('users', { email: 1 }, { unique: true, name: 'email_unique' });
 
 // Compound index
-await mongo.createIndex<User>(
-  'users',
-  { username: 1, email: 1 },
-  { name: 'username_email_idx' }
-);
+await mongo.createIndex<User>('users', { name: 1, age: -1 }, { name: 'name_age_idx' });
+
+// Text index (requires single text index per collection)
+await mongo.createIndex('articles', { title: 'text', body: 'text' });
 ```
 
-## Cursor Operations
+## Collection Management
 
 ```typescript
-const collection = mongo.getCollection<User>('users');
-const cursor = collection.find({ age: { $gte: 25 } });
+const cols = await mongo.listCollections();
+if (cols.ok) console.log(cols.data.map(c => c.name));
 
-await cursor.forEach((doc) => {
-  console.log(doc.username);
-});
+await mongo.dropCollection('temp_data');
 ```
 
-## Multi-Database Support
+## Multi-Database Access
 
 ```typescript
-// Access different databases
-const usersDb = mongo.getDB('users_db');
-const productsDb = mongo.getDB('products_db');
+// Get a Db instance for another database
+const analyticsDb = mongo.getDB('analytics');
 
-// Get collections from different databases
-const users = mongo.getCollection<User>('users', { db: 'users_db' });
-const products = mongo.getCollection<Product>('products', { db: 'products_db' });
+// Get a typed collection from another database
+const events = mongo.getCollection<Event>('events', { db: 'analytics' });
+const cursor = events.find({ type: 'click' });
+await cursor.forEach(doc => process.stdout.write(doc.type));
 ```
 
-## Advanced Features
+## Raw Collection Access
 
-See [test files](../lib/test/mongodb.test.ts) for examples of:
-- Complex aggregation pipelines
-- Lookup (joins)
-- Text search
-- Collection management
-- Multi-database connections
-- Query operators ($gt, $gte, $in, $nin, etc.)
-- Update operators ($set, $inc, $push, $pull, etc.)
+For operations not wrapped by the connector, drop down to the native collection:
 
-## References
+```typescript
+const col = mongo.getCollection<User>('users');
 
-- [MongoDB Documentation](https://www.mongodb.com/docs/)
-- [Test Examples](../lib/test/mongodb.test.ts)
-- [Multi-DB Examples](../lib/test/mongodb-multi-connection.test.ts)
+// Cursor
+const cursor = col.find({ age: { $gte: 25 } }).sort({ name: 1 }).limit(100);
+for await (const doc of cursor) {
+  // stream results
+}
+
+// Bulk write
+await col.bulkWrite([
+  { insertOne: { document: { name: 'X', email: 'x@co.com', age: 20 } } },
+  { updateOne: { filter: { name: 'Bob' }, update: { $inc: { age: 1 } } } },
+]);
+
+// Distinct
+const emails = await col.distinct('email', { age: { $gte: 18 } });
+```
+
+## Underlying Instances
+
+```typescript
+mongo.getInstance();        // Db (default database)
+mongo.getClientInstance();  // MongoClient
+mongo.getDB('other');       // Db for a different database
+```
+
+## Close
+
+```typescript
+await mongo.close();
+// Resets client, db, and init_promise — safe to reconnect after.
+```
+
+## Full API
+
+| Method | Returns |
+|--------|---------|
+| `connect()` | `Promise<void>` |
+| `health()` / `ping()` | `{ ok, result/error }` |
+| `getInstance()` | `Db` |
+| `getClientInstance()` | `MongoClient` |
+| `getDB(name)` | `Db` |
+| `getCollection<T>(name, opts?)` | `Collection<T>` |
+| `findOne<T>(col, filter, opts?)` | `{ ok, data }` |
+| `find<T>(col, filter?, opts?)` | `{ ok, data }` |
+| `insertOne<T>(col, doc)` | `{ ok, data }` |
+| `insertMany<T>(col, docs, opts?)` | `{ ok, data }` |
+| `updateOne<T>(col, filter, update)` | `{ ok, data }` |
+| `updateMany<T>(col, filter, update)` | `{ ok, data }` |
+| `deleteOne<T>(col, filter)` | `{ ok, data }` |
+| `deleteMany<T>(col, filter)` | `{ ok, data }` |
+| `countDocuments<T>(col, filter?)` | `{ ok, data }` |
+| `aggregate<T>(col, pipeline)` | `{ ok, data }` |
+| `createIndex<T>(col, spec, opts?)` | `{ ok, data }` |
+| `listCollections()` | `{ ok, data }` |
+| `dropCollection(name)` | `{ ok }` |
+| `close()` | `Promise<void>` |

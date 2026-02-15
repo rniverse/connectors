@@ -1,228 +1,253 @@
-# Redpanda Connector Guide
+# Redpanda Connector
 
-Kafka-compatible message streaming connector using KafkaJS.
+Kafka-compatible message streaming connector with producer, consumer, and admin operations.
 
-## Configuration
+**Driver:** KafkaJS  
+**Peer dep:** `kafkajs ^2.2.4`
+
+## Setup
 
 ```typescript
 import { RedpandaConnector } from '@rniverse/connectors';
 
-const redpanda = new RedpandaConnector({
-  url: 'localhost:9092'
+// URL format (single or comma-separated brokers)
+const rp = new RedpandaConnector({ url: 'localhost:9092' });
+await rp.connect(); // mandatory — verifies via admin listTopics
+
+// Brokers array format (with auth)
+const rp = new RedpandaConnector({
+  brokers: ['broker1:9092', 'broker2:9092'],
+  clientId: 'my-service',
+  connectionTimeout: 10000,  // ms (default)
+  requestTimeout: 30000,     // ms (default)
+  ssl: true,
+  sasl: { mechanism: 'scram-sha-256', username: 'user', password: 'pass' },
+});
+await rp.connect();
+```
+
+### Advanced KafkaJS overrides
+
+```typescript
+const rp = new RedpandaConnector({
+  brokers: ['localhost:9092'],
+  kafka: { retry: { retries: 5 } },           // KafkaConfig
+  producer: { idempotent: true },              // ProducerConfig
+  consumer: { maxWaitTimeInMs: 5000 },         // ConsumerConfig
 });
 ```
 
-## Basic Usage
+## Health Check
 
 ```typescript
-// Health check
-const health = await redpanda.health();
+const h = await rp.health(); // { ok: true } | { ok: false, error }
 ```
 
 ## Topic Management
 
 ```typescript
-// Create topic
-const result = await redpanda.createTopic({
-  topic: 'my-topic',
+// Create
+await rp.createTopic({
+  topic: 'events',
   numPartitions: 3,
-  replicationFactor: 1
+  replicationFactor: 1,
+  configEntries: [{ name: 'retention.ms', value: '86400000' }], // 1 day
 });
 
-// List topics
-const topics = await redpanda.listTopics();
+// List
+const topics = await rp.listTopics();
+if (topics.ok) console.log(topics.data); // string[]
 
-// Delete topic
-await redpanda.deleteTopic('my-topic');
+// Metadata
+const meta = await rp.fetchTopicMetadata(['events']);
 
-// Get metadata
-const metadata = await redpanda.fetchTopicMetadata(['my-topic']);
+// Delete
+await rp.deleteTopic('events');
 ```
 
-## Publishing Messages
+## Publishing
 
 ```typescript
-// Basic publish
-await redpanda.publish({
+// Basic
+await rp.publish({
   topic: 'events',
-  messages: [
-    { value: JSON.stringify({ event: 'user.created', userId: 123 }) }
-  ]
+  messages: [{ value: JSON.stringify({ type: 'signup', userId: 1 }) }],
 });
 
-// With key
-await redpanda.publish({
+// With key (determines partition)
+await rp.publish({
   topic: 'events',
-  messages: [
-    {
-      key: 'user-123',
-      value: JSON.stringify({ event: 'user.updated' })
-    }
-  ]
+  messages: [{ key: 'user-1', value: JSON.stringify({ type: 'update' }) }],
 });
 
 // With headers
-await redpanda.publish({
+await rp.publish({
   topic: 'events',
-  messages: [
-    {
-      key: 'user-123',
-      value: JSON.stringify({ event: 'user.updated' }),
-      headers: {
-        'correlation-id': 'abc-123',
-        'event-type': 'user.updated'
-      }
-    }
-  ]
+  messages: [{
+    key: 'user-1',
+    value: JSON.stringify({ type: 'update' }),
+    headers: { 'correlation-id': 'abc-123', 'event-type': 'user.updated' },
+  }],
 });
 
-// Batch publish
-await redpanda.publish({
+// Batch
+await rp.publish({
   topic: 'events',
   messages: [
-    { key: 'msg1', value: JSON.stringify({ data: 'Message 1' }) },
-    { key: 'msg2', value: JSON.stringify({ data: 'Message 2' }) },
-    { key: 'msg3', value: JSON.stringify({ data: 'Message 3' }) }
-  ]
+    { key: 'a', value: JSON.stringify({ n: 1 }) },
+    { key: 'b', value: JSON.stringify({ n: 2 }) },
+    { key: 'c', value: JSON.stringify({ n: 3 }) },
+  ],
 });
 ```
 
-## Consuming Messages
+Result: `{ ok: true, data: RecordMetadata[] }` or `{ ok: false, error }`.
+
+## Subscribing
 
 ```typescript
-// Basic consumer
-await redpanda.subscribe(
+await rp.subscribe(
   {
     topics: ['events'],
     groupId: 'my-consumer-group',
-    fromBeginning: true
+    fromBeginning: true,
+    autoCommit: true, // default
   },
   async (payload) => {
-    const message = payload.message;
-    const value = message.value?.toString();
-    
-    console.log('Received:', JSON.parse(value));
-    console.log('Partition:', payload.partition);
-    console.log('Offset:', message.offset);
-  }
+    const value = payload.message.value?.toString();
+    console.log({
+      topic: payload.topic,
+      partition: payload.partition,
+      offset: payload.message.offset,
+      value: JSON.parse(value!),
+    });
+  },
 );
+```
 
-// Multi-topic subscription
-await redpanda.subscribe(
-  {
-    topics: ['events', 'notifications', 'analytics'],
-    groupId: 'multi-topic-consumer',
-    fromBeginning: true
-  },
-  async (payload) => {
-    switch (payload.topic) {
-      case 'events':
-        await handleEvent(payload.message);
-        break;
-      case 'notifications':
-        await handleNotification(payload.message);
-        break;
-      case 'analytics':
-        await handleAnalytics(payload.message);
-        break;
+### Multi-topic
+
+```typescript
+await rp.subscribe(
+  { topics: ['events', 'notifications', 'analytics'], groupId: 'router' },
+  async ({ topic, message }) => {
+    const data = JSON.parse(message.value!.toString());
+    switch (topic) {
+      case 'events':        handleEvent(data); break;
+      case 'notifications': handleNotif(data); break;
+      case 'analytics':     handleAnalytics(data); break;
     }
-  }
+  },
 );
 ```
 
-## Consumer Groups
+### Consumer groups (parallel processing)
 
 ```typescript
-// Multiple consumers with same group ID share the workload
-const consumer1 = new RedpandaConnector({ url: 'localhost:9092' });
-await consumer1.subscribe(
-  { topics: ['events'], groupId: 'processors', fromBeginning: true },
-  handleMessage
-);
+// Two instances with the same groupId share the workload
+const worker1 = new RedpandaConnector({ url: 'localhost:9092' });
+await worker1.connect();
+await worker1.subscribe({ topics: ['tasks'], groupId: 'workers' }, handleTask);
 
-const consumer2 = new RedpandaConnector({ url: 'localhost:9092' });
-await consumer2.subscribe(
-  { topics: ['events'], groupId: 'processors', fromBeginning: true },
-  handleMessage
-);
-// Messages are distributed between consumer1 and consumer2
+const worker2 = new RedpandaConnector({ url: 'localhost:9092' });
+await worker2.connect();
+await worker2.subscribe({ topics: ['tasks'], groupId: 'workers' }, handleTask);
+// Partitions are distributed between worker1 and worker2
 ```
 
-## Unsubscribe
+### Unsubscribe
 
 ```typescript
-await redpanda.unsubscribe();
+await rp.unsubscribe(); // disconnects consumer only
 ```
 
-## Message Patterns
+## Patterns
 
 ### Event Sourcing
 
 ```typescript
-// Publish events
-await redpanda.publish({
+// Publish domain events
+await rp.publish({
   topic: 'user-events',
-  messages: [
-    {
-      key: 'user-123',
-      value: JSON.stringify({
-        type: 'UserCreated',
-        userId: 123,
-        timestamp: Date.now(),
-        data: { username: 'john', email: 'john@example.com' }
-      })
-    }
-  ]
+  messages: [{
+    key: 'user-123',
+    value: JSON.stringify({
+      type: 'UserCreated',
+      timestamp: Date.now(),
+      data: { name: 'Alice', email: 'alice@co.com' },
+    }),
+  }],
 });
 
-// Rebuild state from events
-await redpanda.subscribe(
+// Rebuild state
+await rp.subscribe(
   { topics: ['user-events'], groupId: 'state-builder', fromBeginning: true },
-  async (payload) => {
-    const event = JSON.parse(payload.message.value?.toString());
+  async ({ message }) => {
+    const event = JSON.parse(message.value!.toString());
     await applyEvent(event);
-  }
+  },
 );
 ```
 
 ### Dead Letter Queue
 
 ```typescript
-await redpanda.subscribe(
+await rp.subscribe(
   { topics: ['events'], groupId: 'processor' },
   async (payload) => {
     try {
       await processMessage(payload.message);
     } catch (error) {
-      // Send to DLQ
-      await redpanda.publish({
+      await rp.publish({
         topic: 'events-dlq',
         messages: [{
           key: payload.message.key?.toString(),
-          value: payload.message.value,
+          value: payload.message.value!.toString(),
           headers: {
-            'error': error.message,
+            error: (error as Error).message,
             'original-topic': payload.topic,
-            'failed-at': Date.now().toString()
-          }
-        }]
+            'failed-at': Date.now().toString(),
+          },
+        }],
       });
     }
-  }
+  },
 );
 ```
 
-## Advanced Features
+## Close
 
-See [test file](../lib/test/redpanda.test.ts) for examples of:
-- Topic metadata
-- Message headers
-- Partitioning strategies
-- Consumer group coordination
-- Offset management
+```typescript
+await rp.unsubscribe(); // consumer only
+await rp.close();       // disconnects producer + consumer + admin in parallel
+```
 
-## References
+## Underlying Instances
 
-- [Redpanda Documentation](https://docs.redpanda.com/)
-- [KafkaJS Documentation](https://kafka.js.org/)
-- [Test Examples](../lib/test/redpanda.test.ts)
+```typescript
+rp.getInstance();          // Kafka (KafkaJS client)
+rp.getAdminInstance();     // Admin | null
+rp.getProducerInstance();  // Producer | null
+rp.getConsumerInstance();  // Consumer | null
+```
+
+Sub-clients (admin, producer, consumer) are created lazily on first use.
+
+## Full API
+
+| Method | Returns |
+|--------|---------|
+| `connect()` | `Promise<void>` |
+| `health()` / `ping()` | `{ ok }` or `{ ok, error }` |
+| `createTopic(config)` | `{ ok }` or `{ ok, error }` |
+| `listTopics()` | `{ ok, data: string[] }` |
+| `deleteTopic(name)` | `{ ok }` or `{ ok, error }` |
+| `fetchTopicMetadata(topics?)` | `{ ok, data }` |
+| `publish(message)` | `{ ok, data }` or `{ ok, error }` |
+| `subscribe(config, handler)` | `{ ok, data: Consumer }` |
+| `unsubscribe()` | `Promise<void>` |
+| `close()` | `Promise<void>` |
+| `getInstance()` | `Kafka` |
+| `getAdminInstance()` | `Admin \| null` |
+| `getProducerInstance()` | `Producer \| null` |
+| `getConsumerInstance()` | `Consumer \| null` |

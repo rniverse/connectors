@@ -15,58 +15,109 @@ import { Partitioners } from 'kafkajs';
 export class RedpandaConnector {
 	private kafka: ReturnType<typeof initRedpanda>;
 	private adminClient: Admin | null = null;
+	private admin_promise: Promise<Admin> | null = null;
 	private producer: Producer | null = null;
+	private producer_promise: Promise<Producer> | null = null;
 	private consumer: Consumer | null = null;
-	config: RedpandaConnectorConfig | RedpandaConnectorURLConfig;
+	private consumer_promise: Promise<Consumer> | null = null;
+	private consumer_running = false;
+	private consumer_group_id: string | null = null;
+	private config: RedpandaConnectorConfig | RedpandaConnectorURLConfig;
 
 	constructor(config: RedpandaConnectorConfig | RedpandaConnectorURLConfig) {
 		this.config = config;
 		this.kafka = initRedpanda(this.config);
 	}
 
+	/**
+	 * Verify connectivity by performing an admin listTopics call.
+	 */
+	async connect(): Promise<void> {
+		const admin = await this.getAdmin();
+		await admin.listTopics();
+		log.info('Redpanda connected');
+	}
+
 	private async getAdmin(): Promise<Admin> {
-		if (!this.adminClient) {
-			this.adminClient = this.kafka.admin();
-			await this.adminClient.connect();
-			log.info('Redpanda admin client connected');
+		if (!this.admin_promise) {
+			this.admin_promise = this.__connect_admin();
 		}
-		return this.adminClient;
+		return this.admin_promise;
+	}
+
+	private async __connect_admin(): Promise<Admin> {
+		try {
+			const admin = this.kafka.admin();
+			await admin.connect();
+			this.adminClient = admin;
+			return admin;
+		} catch (err) {
+			this.admin_promise = null;
+			throw err;
+		}
 	}
 
 	private async getProducer(): Promise<Producer> {
-		if (!this.producer) {
-			this.producer = this.kafka.producer({
+		if (!this.producer_promise) {
+			this.producer_promise = this.__connect_producer();
+		}
+		return this.producer_promise;
+	}
+
+	private async __connect_producer(): Promise<Producer> {
+		try {
+			const producer = this.kafka.producer({
 				createPartitioner: Partitioners.DefaultPartitioner,
 				...('producer' in this.config ? this.config.producer : {}),
 			});
-			await this.producer.connect();
+			await producer.connect();
+			this.producer = producer;
 			log.info('Redpanda producer connected');
+			return producer;
+		} catch (err) {
+			this.producer_promise = null;
+			throw err;
 		}
-		return this.producer;
 	}
 
 	private async getConsumer(groupId: string): Promise<Consumer> {
-		if (!this.consumer) {
-			this.consumer = this.kafka.consumer({
+		if (this.consumer_group_id && this.consumer_group_id !== groupId) {
+			throw new Error(
+				`Consumer already exists with groupId "${this.consumer_group_id}" — cannot create with "${groupId}". Call unsubscribe() first.`,
+			);
+		}
+		if (!this.consumer_promise) {
+			this.consumer_group_id = groupId;
+			this.consumer_promise = this.__connect_consumer(groupId);
+		}
+		return this.consumer_promise;
+	}
+
+	private async __connect_consumer(groupId: string): Promise<Consumer> {
+		try {
+			const consumer = this.kafka.consumer({
 				groupId,
 				...('consumer' in this.config ? this.config.consumer : {}),
 			});
-			await this.consumer.connect();
-			log.info(`Redpanda consumer connected with groupId: ${groupId}`);
+			await consumer.connect();
+			this.consumer = consumer;
+			log.info({ groupId }, 'Redpanda consumer connected');
+			return consumer;
+		} catch (err) {
+			this.consumer_promise = null;
+			this.consumer_group_id = null;
+			throw err;
 		}
-		return this.consumer;
 	}
 
 	async ping() {
-		log.info('Pinging Redpanda...');
 		try {
 			const admin = await this.getAdmin();
 			await admin.listTopics();
-			log.info('Redpanda ping successful');
-			return { ok: true };
+			return { ok: true as const };
 		} catch (err) {
-			log.error(`Redpanda ping failed: ${JSON.stringify(err)}`);
-			return { ok: false };
+			log.error({ error: err }, 'Redpanda ping failed');
+			return { ok: false as const, error: err };
 		}
 	}
 
@@ -75,7 +126,6 @@ export class RedpandaConnector {
 	}
 
 	async createTopic(config: RedpandaTopicConfig) {
-		log.info(`Creating topic: ${config.topic}`);
 		try {
 			const admin = await this.getAdmin();
 			await admin.createTopics({
@@ -88,62 +138,54 @@ export class RedpandaConnector {
 					},
 				],
 			});
-			log.info(`Topic created successfully: ${config.topic}`);
-			return { ok: true };
+			log.info({ topic: config.topic }, 'Topic created');
+			return { ok: true as const };
 		} catch (err) {
-			log.error(`Failed to create topic: ${JSON.stringify(err)}`);
-			return { ok: false, error: err };
+			log.error({ error: err, topic: config.topic }, 'Failed to create topic');
+			return { ok: false as const, error: err };
 		}
 	}
 
 	async listTopics() {
-		log.info('Listing topics...');
 		try {
 			const admin = await this.getAdmin();
-			const topics = await admin.listTopics();
-			log.info(`Found ${topics.length} topics`);
-			return { ok: true, topics };
+			const data = await admin.listTopics();
+			return { ok: true as const, data };
 		} catch (err) {
-			log.error(`Failed to list topics: ${JSON.stringify(err)}`);
-			return { ok: false, error: err };
+			log.error({ error: err }, 'Failed to list topics');
+			return { ok: false as const, error: err };
 		}
 	}
 
 	async deleteTopic(topic: string) {
-		log.info(`Deleting topic: ${topic}`);
 		try {
 			const admin = await this.getAdmin();
-			await admin.deleteTopics({
-				topics: [topic],
-			});
-			log.info(`Topic deleted successfully: ${topic}`);
-			return { ok: true };
+			await admin.deleteTopics({ topics: [topic] });
+			log.info({ topic }, 'Topic deleted');
+			return { ok: true as const };
 		} catch (err) {
-			log.error(`Failed to delete topic: ${JSON.stringify(err)}`);
-			return { ok: false, error: err };
+			log.error({ error: err, topic }, 'Failed to delete topic');
+			return { ok: false as const, error: err };
 		}
 	}
 
 	async fetchTopicMetadata(topics?: string[]) {
-		log.info('Fetching topic metadata...');
 		try {
 			const admin = await this.getAdmin();
-			const metadata = await admin.fetchTopicMetadata(
+			const data = await admin.fetchTopicMetadata(
 				topics ? { topics } : undefined,
 			);
-			log.info('Topic metadata fetched successfully');
-			return { ok: true, metadata };
+			return { ok: true as const, data };
 		} catch (err) {
-			log.error(`Failed to fetch topic metadata: ${JSON.stringify(err)}`);
-			return { ok: false, error: err };
+			log.error({ error: err }, 'Failed to fetch topic metadata');
+			return { ok: false as const, error: err };
 		}
 	}
 
 	async publish(message: RedpandaMessage) {
-		log.info(`Publishing message to topic: ${message.topic}`);
 		try {
 			const producer = await this.getProducer();
-			const result = await producer.send({
+			const data = await producer.send({
 				topic: message.topic,
 				messages: message.messages.map((msg) => ({
 					key: msg.key,
@@ -152,11 +194,10 @@ export class RedpandaConnector {
 					partition: msg.partition,
 				})),
 			});
-			log.info(`Message published successfully to ${message.topic}`);
-			return { ok: true, result };
+			return { ok: true as const, data };
 		} catch (err) {
-			log.error(`Failed to publish message: ${JSON.stringify(err)}`);
-			return { ok: false, error: err };
+			log.error({ error: err, topic: message.topic }, 'Failed to publish message');
+			return { ok: false as const, error: err };
 		}
 	}
 
@@ -164,10 +205,13 @@ export class RedpandaConnector {
 		config: RedpandaSubscribeConfig,
 		handler: (payload: EachMessagePayload) => Promise<void>,
 	) {
-		log.info(
-			`Subscribing to topics: ${config.topics.join(', ')} with group: ${config.groupId}`,
-		);
 		try {
+			if (this.consumer_running) {
+				throw new Error(
+					'Consumer is already running — call unsubscribe() before re-subscribing',
+				);
+			}
+
 			const consumer = await this.getConsumer(config.groupId);
 
 			for (const topic of config.topics) {
@@ -182,44 +226,52 @@ export class RedpandaConnector {
 				eachMessage: handler,
 			});
 
-			log.info('Consumer started successfully');
-			return { ok: true, consumer };
+			this.consumer_running = true;
+			log.info({ topics: config.topics, groupId: config.groupId }, 'Consumer subscribed');
+			return { ok: true as const, data: consumer };
 		} catch (err) {
-			log.error(`Failed to subscribe: ${JSON.stringify(err)}`);
-			return { ok: false, error: err };
+			log.error({ error: err }, 'Failed to subscribe');
+			return { ok: false as const, error: err };
 		}
 	}
 
-	async unsubscribe() {
+	async unsubscribe(): Promise<void> {
 		if (this.consumer) {
 			await this.consumer.disconnect();
 			this.consumer = null;
-			log.info('Consumer unsubscribed and disconnected');
-		}
-	}
-
-	async close() {
-		log.info('Closing Redpanda connections...');
-
-		if (this.producer) {
-			await this.producer.disconnect();
-			this.producer = null;
-			log.info('Producer disconnected');
-		}
-
-		if (this.consumer) {
-			await this.consumer.disconnect();
-			this.consumer = null;
+			this.consumer_promise = null;
+			this.consumer_running = false;
+			this.consumer_group_id = null;
 			log.info('Consumer disconnected');
 		}
+	}
 
+	async close(): Promise<void> {
+		const tasks: Promise<void>[] = [];
+
+		if (this.producer) {
+			tasks.push(this.producer.disconnect().then(() => {
+				this.producer = null;
+				this.producer_promise = null;
+			}));
+		}
+		if (this.consumer) {
+			tasks.push(this.consumer.disconnect().then(() => {
+				this.consumer = null;
+				this.consumer_promise = null;
+				this.consumer_running = false;
+				this.consumer_group_id = null;
+			}));
+		}
 		if (this.adminClient) {
-			await this.adminClient.disconnect();
-			this.adminClient = null;
-			log.info('Admin client disconnected');
+			tasks.push(this.adminClient.disconnect().then(() => {
+				this.adminClient = null;
+				this.admin_promise = null;
+			}));
 		}
 
-		log.info('All Redpanda connections closed');
+		await Promise.all(tasks);
+		log.info('Redpanda connections closed');
 	}
 
 	getInstance() {
@@ -237,6 +289,4 @@ export class RedpandaConnector {
 	getConsumerInstance() {
 		return this.consumer;
 	}
-
-	initialize() {}
 }
