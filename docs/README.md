@@ -161,40 +161,43 @@ interface User { name: string; email: string; age: number }
 const mongo = new MongoDBConnector({ url: 'mongodb://localhost:27017', database: 'mydb' });
 await mongo.connect();
 
+const db = mongo.getInstance();
+const users = db.collection<User>('users');
+
 // Insert
-await mongo.insertOne<User>('users', { name: 'Alice', email: 'alice@co.com', age: 28 });
+await users.insertOne({ name: 'Alice', email: 'alice@co.com', age: 28 });
 
 // Find
-const result = await mongo.find<User>('users', { age: { $gte: 25 } });
-if (result.ok) console.log(result.data); // User[]
+const adults = await users.find({ age: { $gte: 25 } }).toArray();
+console.log(adults); // User[]
 
 // Update
-await mongo.updateOne<User>('users', { email: 'alice@co.com' }, { $set: { age: 29 } });
+await users.updateOne({ email: 'alice@co.com' }, { $set: { age: 29 } });
 
 // Delete
-await mongo.deleteMany<User>('users', { age: { $lt: 18 } });
+await users.deleteMany({ age: { $lt: 18 } });
 
 // Aggregation
-const agg = await mongo.aggregate<User>('users', [
+const agg = await users.aggregate([
   { $group: { _id: null, avgAge: { $avg: '$age' } } },
-]);
+]).toArray();
 
 // Cross-database access
-const other = mongo.getCollection<User>('users', { db: 'other_db' });
+const otherDb = mongo.getDB('other_db');
 
 await mongo.close();
 ```
 
-### Result pattern
+### Result Pattern
 
-Every MongoDB CRUD method returns `{ ok: true, data }` or `{ ok: false, error }`:
+Most operations are native driver calls and throw exceptions on failure. Check `health()` for connection status wrapper:
 
 ```typescript
-const r = await mongo.findOne<User>('users', { email });
+const r = await mongo.health();
 if (r.ok) {
-  // r.data: User | null
+  // connection is healthy
 } else {
-  // r.error: caught exception
+  // r.error contains the connection failure reason
 }
 ```
 
@@ -209,32 +212,35 @@ if (r.ok) {
 import { RedpandaConnector } from '@rniverse/connectors';
 
 const rp = new RedpandaConnector({ url: 'localhost:9092' });
-await rp.connect();
+const admin = await rp.connect();
 
 // Topic management
-await rp.createTopic({ topic: 'events', numPartitions: 3 });
-const topics = await rp.listTopics();
+await admin.createTopics({ topics: [{ topic: 'events', numPartitions: 3 }] });
+const topics = await admin.listTopics();
 
 // Publish
-await rp.publish({
+const producer = await rp.getProducer();
+await producer.send({
   topic: 'events',
   messages: [
     { key: 'user-1', value: JSON.stringify({ type: 'signup', ts: Date.now() }) },
   ],
 });
+await producer.disconnect();
 
 // Subscribe
-await rp.subscribe(
-  { topics: ['events'], groupId: 'worker', fromBeginning: true },
-  async (payload) => {
+const consumer = await rp.getConsumer({ groupId: 'worker' });
+await consumer.subscribe({ topics: ['events'], fromBeginning: true });
+await consumer.run({
+  eachMessage: async (payload) => {
     const event = JSON.parse(payload.message.value!.toString());
     console.log(event);
   },
-);
+});
 
-// Cleanup
-await rp.unsubscribe(); // stops consumer only
-await rp.close();       // disconnects producer + consumer + admin
+// Cleanup (consumer disconnected manually if running)
+// await consumer.disconnect();
+await rp.close();       // disconnects cached admin client
 ```
 
 ### Brokers array config
@@ -349,20 +355,9 @@ import { initMongoDB, initRedis, initORM, initRedpanda } from '@rniverse/connect
 
 ## Error Handling
 
-### MongoDB (result union)
-
-```typescript
-const r = await mongo.findOne<User>('users', { email });
-if (!r.ok) {
-  log.error({ error: r.error }, 'lookup failed');
-  return;
-}
-// r.data is safely typed here
-```
-
 ### Other connectors (standard throw)
 
-Redis, SQL, and Redpanda operations throw on failure — wrap in try/catch:
+Redis, SQL, MongoDB, and Redpanda native operations throw on failure. You should wrap in try/catch or let your framework handle it.
 
 ```typescript
 try {
@@ -371,8 +366,6 @@ try {
   log.error({ error: err }, 'redis set failed');
 }
 ```
-
-Redpanda's topic/publish/subscribe methods return `{ ok, data/error }` like MongoDB.
 
 ### connect() failures
 

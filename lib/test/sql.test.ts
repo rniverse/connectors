@@ -12,6 +12,7 @@ describe('SQL Tool Tests', () => {
 
 	beforeAll(async () => {
 		connector = new SQLConnector({ url: process.env.POSTGRES_TEST_URL || '' });
+		await connector.connect();
 		const client = connector.getInstance();
 
 		if (!client) {
@@ -185,13 +186,40 @@ describe('SQL Tool Tests', () => {
 		});
 	});
 
-	test('CURSOR - WITH HOLD (survives transaction)', async () => {
+	test('STREAM - Cursor-based Async Iteration', async () => {
 		const client = connector.getInstance();
 		if (!client) throw new Error('No client');
 
-		// WITH HOLD cursors survive COMMIT - need to use execute outside Drizzle's transaction wrapper
-		// Since Drizzle manages transactions automatically, we skip this test
-		// Note: WITH HOLD cursors need manual BEGIN/COMMIT management which conflicts with Drizzle's tx API
-		expect(true).toBe(true); // Placeholder - this pattern not supported in Drizzle
+		const streamed: any[] = [];
+
+		await client.transaction(async (tx) => {
+			// Declare a cursor for streaming
+			await tx.execute(
+				sql.raw('DECLARE stream_cursor CURSOR FOR SELECT * FROM users ORDER BY id'),
+			);
+
+			// Stream rows one at a time using FETCH in a loop
+			let hasMore = true;
+			while (hasMore) {
+				const rows = await tx.execute(sql.raw('FETCH 1 FROM stream_cursor'));
+				if (rows.length === 0) {
+					hasMore = false;
+				} else {
+					streamed.push(rows[0]);
+				}
+			}
+
+			await tx.execute(sql.raw('CLOSE stream_cursor'));
+		});
+
+		// Verify all rows were streamed
+		expect(streamed.length).toBeGreaterThan(0);
+		expect(streamed[0]).toHaveProperty('username');
+		log.info(`Streamed ${streamed.length} rows via cursor`);
+
+		// Verify order is maintained
+		for (let i = 1; i < streamed.length; i++) {
+			expect(streamed[i - 1].id).toBeLessThan(streamed[i].id);
+		}
 	});
 });

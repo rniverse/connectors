@@ -13,6 +13,7 @@ describe('SQL Drizzle ORM Tests', () => {
 
 	beforeAll(async () => {
 		connector = new SQLConnector({ url: process.env.POSTGRES_TEST_URL || '' });
+		await connector.connect();
 		const client = connector.getInstance();
 
 		if (!client) {

@@ -1,6 +1,6 @@
 # Redpanda Connector
 
-Kafka-compatible message streaming connector with producer, consumer, and admin operations.
+Kafka-compatible message streaming connector wrapper. It manages the underlying connection and provides access to native KafkaJS Admin, Producer, and Consumer clients.
 
 **Driver:** KafkaJS  
 **Peer dep:** `kafkajs ^2.2.4`
@@ -12,7 +12,7 @@ import { RedpandaConnector } from '@rniverse/connectors';
 
 // URL format (single or comma-separated brokers)
 const rp = new RedpandaConnector({ url: 'localhost:9092' });
-await rp.connect(); // mandatory — verifies via admin listTopics
+const admin = await rp.connect(); // mandatory — verifies connection via admin.listTopics()
 
 // Brokers array format (with auth)
 const rp = new RedpandaConnector({
@@ -32,8 +32,6 @@ await rp.connect();
 const rp = new RedpandaConnector({
   brokers: ['localhost:9092'],
   kafka: { retry: { retries: 5 } },           // KafkaConfig
-  producer: { idempotent: true },              // ProducerConfig
-  consumer: { maxWaitTimeInMs: 5000 },         // ConsumerConfig
 });
 ```
 
@@ -43,45 +41,46 @@ const rp = new RedpandaConnector({
 const h = await rp.health(); // { ok: true } | { ok: false, error }
 ```
 
-## Topic Management
+## Topic Management (Admin)
+
+After connecting, you can get the cached `Admin` client.
 
 ```typescript
+const admin = await rp.getAdmin();
+
 // Create
-await rp.createTopic({
-  topic: 'events',
-  numPartitions: 3,
-  replicationFactor: 1,
-  configEntries: [{ name: 'retention.ms', value: '86400000' }], // 1 day
+await admin.createTopics({
+  topics: [{ 
+    topic: 'events', 
+    numPartitions: 3, 
+    replicationFactor: 1,
+    configEntries: [{ name: 'retention.ms', value: '86400000' }] // 1 day
+  }],
 });
 
 // List
-const topics = await rp.listTopics();
-if (topics.ok) console.log(topics.data); // string[]
-
-// Metadata
-const meta = await rp.fetchTopicMetadata(['events']);
+const topics = await admin.listTopics();
+console.log(topics);
 
 // Delete
-await rp.deleteTopic('events');
+await admin.deleteTopics({ topics: ['events'] });
 ```
 
-## Publishing
+## Publishing (Producer)
+
+Request a producer instance. **You are responsible for disconnecting it** when done (or when shutting down).
 
 ```typescript
+const producer = await rp.getProducer(); // Optionally passing ProducerConfig
+
 // Basic
-await rp.publish({
+await producer.send({
   topic: 'events',
   messages: [{ value: JSON.stringify({ type: 'signup', userId: 1 }) }],
 });
 
-// With key (determines partition)
-await rp.publish({
-  topic: 'events',
-  messages: [{ key: 'user-1', value: JSON.stringify({ type: 'update' }) }],
-});
-
-// With headers
-await rp.publish({
+// With key (determines partition) & headers
+await producer.send({
   topic: 'events',
   messages: [{
     key: 'user-1',
@@ -91,7 +90,7 @@ await rp.publish({
 });
 
 // Batch
-await rp.publish({
+await producer.send({
   topic: 'events',
   messages: [
     { key: 'a', value: JSON.stringify({ n: 1 }) },
@@ -99,155 +98,129 @@ await rp.publish({
     { key: 'c', value: JSON.stringify({ n: 3 }) },
   ],
 });
+
+await producer.disconnect();
 ```
 
-Result: `{ ok: true, data: RecordMetadata[] }` or `{ ok: false, error }`.
+## Subscribing (Consumer)
 
-## Subscribing
+Request a consumer instance with a `groupId`. **You are responsible for disconnecting it** when shutting down.
+
+### Single Message Processing
 
 ```typescript
-await rp.subscribe(
-  {
-    topics: ['events'],
-    groupId: 'my-consumer-group',
-    fromBeginning: true,
-    autoCommit: true, // default
-  },
-  async (payload) => {
-    const value = payload.message.value?.toString();
+const consumer = await rp.getConsumer({ groupId: 'my-consumer-group' });
+
+await consumer.subscribe({ topics: ['events', 'notifications'], fromBeginning: true });
+
+await consumer.run({
+  eachMessage: async ({ topic, partition, message }) => {
+    const value = message.value?.toString();
     console.log({
-      topic: payload.topic,
-      partition: payload.partition,
-      offset: payload.message.offset,
+      topic,
+      partition,
+      offset: message.offset,
       value: JSON.parse(value!),
     });
   },
-);
+});
+
+// Later, on shutdown:
+// await consumer.disconnect();
 ```
 
-### Multi-topic
+### Batch Processing (High Throughput)
 
 ```typescript
-await rp.subscribe(
-  { topics: ['events', 'notifications', 'analytics'], groupId: 'router' },
-  async ({ topic, message }) => {
-    const data = JSON.parse(message.value!.toString());
-    switch (topic) {
-      case 'events':        handleEvent(data); break;
-      case 'notifications': handleNotif(data); break;
-      case 'analytics':     handleAnalytics(data); break;
+const consumer = await rp.getConsumer({ groupId: 'batch-group' });
+await consumer.subscribe({ topics: ['events'], fromBeginning: true });
+
+await consumer.run({
+  eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
+    console.log(`Received batch of ${batch.messages.length} messages`);
+    
+    for (const message of batch.messages) {
+      if (!isRunning() || isStale()) break;
+      
+      await processMessage(message);
+      
+      resolveOffset(message.offset);
+      await heartbeat(); // keep consumer alive during long processing
     }
   },
-);
-```
-
-### Consumer groups (parallel processing)
-
-```typescript
-// Two instances with the same groupId share the workload
-const worker1 = new RedpandaConnector({ url: 'localhost:9092' });
-await worker1.connect();
-await worker1.subscribe({ topics: ['tasks'], groupId: 'workers' }, handleTask);
-
-const worker2 = new RedpandaConnector({ url: 'localhost:9092' });
-await worker2.connect();
-await worker2.subscribe({ topics: ['tasks'], groupId: 'workers' }, handleTask);
-// Partitions are distributed between worker1 and worker2
-```
-
-### Unsubscribe
-
-```typescript
-await rp.unsubscribe(); // disconnects consumer only
+});
 ```
 
 ## Patterns
 
-### Event Sourcing
+### Dead Letter Queue (DLQ)
 
 ```typescript
-// Publish domain events
-await rp.publish({
-  topic: 'user-events',
-  messages: [{
-    key: 'user-123',
-    value: JSON.stringify({
-      type: 'UserCreated',
-      timestamp: Date.now(),
-      data: { name: 'Alice', email: 'alice@co.com' },
-    }),
-  }],
-});
+const producer = await rp.getProducer();
+const consumer = await rp.getConsumer({ groupId: 'processor' });
 
-// Rebuild state
-await rp.subscribe(
-  { topics: ['user-events'], groupId: 'state-builder', fromBeginning: true },
-  async ({ message }) => {
-    const event = JSON.parse(message.value!.toString());
-    await applyEvent(event);
-  },
-);
-```
-
-### Dead Letter Queue
-
-```typescript
-await rp.subscribe(
-  { topics: ['events'], groupId: 'processor' },
-  async (payload) => {
+await consumer.subscribe({ topic: 'events', fromBeginning: true });
+await consumer.run({
+  eachMessage: async ({ message, topic, partition }) => {
     try {
-      await processMessage(payload.message);
-    } catch (error) {
-      await rp.publish({
+      await processMessage(message);
+    } catch (err: any) {
+      // Forward to DLQ instead of crashing or endlessly retrying
+      await producer.send({
         topic: 'events-dlq',
         messages: [{
-          key: payload.message.key?.toString(),
-          value: payload.message.value!.toString(),
-          headers: {
-            error: (error as Error).message,
-            'original-topic': payload.topic,
-            'failed-at': Date.now().toString(),
-          },
+          key: message.key?.toString(),
+          value: JSON.stringify({
+            original_message: JSON.parse(message.value?.toString() || '{}'),
+            error: err.message,
+            source_topic: topic,
+            source_partition: partition,
+            source_offset: message.offset,
+          }),
         }],
       });
     }
   },
-);
+});
+```
+
+### Manual Offset Commit (At-least-once Semantics)
+
+```typescript
+await consumer.run({
+  autoCommit: false, // Turn off automatic commits
+  eachMessage: async ({ message, topic, partition, heartbeat }) => {
+    // 1. Process
+    await processMessage(message);
+    
+    // 2. Commit explicitly after success
+    await consumer.commitOffsets([{
+      topic,
+      partition,
+      offset: (Number(message.offset) + 1).toString(),
+    }]);
+    
+    await heartbeat();
+  },
+});
 ```
 
 ## Close
 
 ```typescript
-await rp.unsubscribe(); // consumer only
-await rp.close();       // disconnects producer + consumer + admin in parallel
+await rp.close(); // Disconnects the cached Admin client
+// Note: Producers and Consumers created via getProducer()/getConsumer() 
+// must be disconnected manually!
 ```
-
-## Underlying Instances
-
-```typescript
-rp.getInstance();          // Kafka (KafkaJS client)
-rp.getAdminInstance();     // Admin | null
-rp.getProducerInstance();  // Producer | null
-rp.getConsumerInstance();  // Consumer | null
-```
-
-Sub-clients (admin, producer, consumer) are created lazily on first use.
 
 ## Full API
 
-| Method | Returns |
-|--------|---------|
-| `connect()` | `Promise<void>` |
-| `health()` / `ping()` | `{ ok }` or `{ ok, error }` |
-| `createTopic(config)` | `{ ok }` or `{ ok, error }` |
-| `listTopics()` | `{ ok, data: string[] }` |
-| `deleteTopic(name)` | `{ ok }` or `{ ok, error }` |
-| `fetchTopicMetadata(topics?)` | `{ ok, data }` |
-| `publish(message)` | `{ ok, data }` or `{ ok, error }` |
-| `subscribe(config, handler)` | `{ ok, data: Consumer }` |
-| `unsubscribe()` | `Promise<void>` |
-| `close()` | `Promise<void>` |
-| `getInstance()` | `Kafka` |
-| `getAdminInstance()` | `Admin \| null` |
-| `getProducerInstance()` | `Producer \| null` |
-| `getConsumerInstance()` | `Consumer \| null` |
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `connect()` | `Promise<Admin>` | Initializes connection and verifies via Admin API |
+| `health()` / `ping()` | `{ ok: boolean, error?: any }` | Performs Admin API check |
+| `getAdmin()` | `Promise<Admin>` | Returns the cached KafkaJS Admin client |
+| `getProducer(config?)` | `Promise<Producer>` | Creates and connects a new KafkaJS Producer |
+| `getConsumer(config)` | `Promise<Consumer>` | Creates and connects a new KafkaJS Consumer |
+| `getInstance()` | `Kafka` | Returns the raw KafkaJS client instance |
+| `close()` | `Promise<void>` | Disconnects the cached Admin client |

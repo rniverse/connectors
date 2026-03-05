@@ -1,6 +1,6 @@
 # MongoDB Connector
 
-Type-safe MongoDB connector with full CRUD, aggregation pipelines, index management, and multi-database support.
+Connection wrapper for the official MongoDB Node.js driver. It manages the connection pool lifecycle and health checks.
 
 **Driver:** Official `mongodb` Node.js driver  
 **Peer dep:** `mongodb ^6.20.0`
@@ -41,161 +41,87 @@ catch { await Bun.sleep(3000); await mongo.connect(); }
 const h = await mongo.health(); // { ok: true, result } | { ok: false, error }
 ```
 
-## Result Pattern
+## Querying (CRUD)
 
-Every CRUD method returns a discriminated union:
-
-```typescript
-type Ok<T>  = { ok: true;  data: T };
-type Err     = { ok: false; error: unknown };
-
-const r = await mongo.findOne<User>('users', { email });
-if (r.ok) {
-  r.data; // User | null
-} else {
-  r.error; // the caught exception
-}
-```
-
-## CRUD Operations
-
-### Find
+After connecting, use `getInstance()` to get the native `Db` object. All operations use the official MongoDB Node.js driver API.
 
 ```typescript
 interface User { name: string; email: string; age: number }
 
-// Find one
-const r = await mongo.findOne<User>('users', { name: 'Alice' });
+const db = mongo.getInstance();
+const users = db.collection<User>('users');
 
-// Find many
-const all = await mongo.find<User>('users', { age: { $gte: 18 } });
+// Insert
+const insertRes = await users.insertOne({ name: 'Alice', email: 'alice@co.com', age: 28 });
+console.log(insertRes.insertedId);
 
-// With options
-const recent = await mongo.find<User>(
-  'users',
-  {},
-  { sort: { createdAt: -1 }, limit: 10, projection: { name: 1, email: 1 } },
-);
-```
+// Find
+const adults = await users.find({ age: { $gte: 18 } }).toArray();
 
-### Insert
+const recent = await users.find({})
+  .sort({ createdAt: -1 })
+  .limit(10)
+  .project({ name: 1, email: 1 })
+  .toArray();
 
-```typescript
-// One
-const r = await mongo.insertOne<User>('users', {
-  name: 'Alice', email: 'alice@co.com', age: 28,
-});
-if (r.ok) console.log(r.data.insertedId);
+// Update
+await users.updateOne({ email: 'alice@co.com' }, { $set: { age: 29 } });
 
-// Many
-const batch = await mongo.insertMany<User>('users', [
-  { name: 'Bob', email: 'bob@co.com', age: 32 },
-  { name: 'Eve', email: 'eve@co.com', age: 24 },
-]);
-if (batch.ok) console.log(batch.data.insertedCount);
-```
+// Delete
+await users.deleteMany({ age: { $lt: 18 } });
 
-### Update
-
-```typescript
-// One
-await mongo.updateOne<User>('users', { email: 'alice@co.com' }, { $set: { age: 29 } });
-
-// Many
-await mongo.updateMany<User>('users', { age: { $lt: 18 } }, { $set: { status: 'minor' } });
-```
-
-### Delete
-
-```typescript
-await mongo.deleteOne<User>('users', { email: 'alice@co.com' });
-await mongo.deleteMany<User>('users', { age: { $lt: 18 } });
-```
-
-### Count
-
-```typescript
-const r = await mongo.countDocuments<User>('users', { age: { $gte: 25 } });
-if (r.ok) console.log(r.data); // number
+// Count
+const count = await users.countDocuments({ age: { $gte: 25 } });
 ```
 
 ## Aggregation Pipelines
 
 ```typescript
-const r = await mongo.aggregate<User>('orders', [
+const db = mongo.getInstance();
+const results = await db.collection('orders').aggregate([
   { $match: { status: 'completed' } },
   { $group: { _id: '$customerId', total: { $sum: '$amount' }, count: { $sum: 1 } } },
   { $sort: { total: -1 } },
   { $limit: 10 },
-]);
-if (r.ok) console.log(r.data); // Document[]
-```
-
-### Lookup (join)
-
-```typescript
-await mongo.aggregate('orders', [
-  { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
-  { $unwind: '$user' },
-  { $project: { orderId: 1, amount: 1, 'user.name': 1 } },
-]);
+]).toArray();
 ```
 
 ## Index Management
 
 ```typescript
+const db = mongo.getInstance();
+const users = db.collection('users');
+
 // Unique index
-await mongo.createIndex<User>('users', { email: 1 }, { unique: true, name: 'email_unique' });
+await users.createIndex({ email: 1 }, { unique: true, name: 'email_unique' });
 
 // Compound index
-await mongo.createIndex<User>('users', { name: 1, age: -1 }, { name: 'name_age_idx' });
-
-// Text index (requires single text index per collection)
-await mongo.createIndex('articles', { title: 'text', body: 'text' });
+await users.createIndex({ name: 1, age: -1 }, { name: 'name_age_idx' });
 ```
 
-## Collection Management
+## Cursor / Streaming
+For large datasets, use the cursor to iterate asynchronously rather than loading everything into memory with `.toArray()`.
 
 ```typescript
-const cols = await mongo.listCollections();
-if (cols.ok) console.log(cols.data.map(c => c.name));
+const db = mongo.getInstance();
+const cursor = db.collection<User>('users').find({ age: { $gte: 25 } });
 
-await mongo.dropCollection('temp_data');
+for await (const doc of cursor) {
+  // Process one document at a time
+  console.log(doc.name);
+}
 ```
 
 ## Multi-Database Access
 
+If your cluster has multiple databases, you can get a `Db` instance for a different one:
+
 ```typescript
 // Get a Db instance for another database
 const analyticsDb = mongo.getDB('analytics');
+const events = analyticsDb.collection('events');
 
-// Get a typed collection from another database
-const events = mongo.getCollection<Event>('events', { db: 'analytics' });
-const cursor = events.find({ type: 'click' });
-await cursor.forEach(doc => process.stdout.write(doc.type));
-```
-
-## Raw Collection Access
-
-For operations not wrapped by the connector, drop down to the native collection:
-
-```typescript
-const col = mongo.getCollection<User>('users');
-
-// Cursor
-const cursor = col.find({ age: { $gte: 25 } }).sort({ name: 1 }).limit(100);
-for await (const doc of cursor) {
-  // stream results
-}
-
-// Bulk write
-await col.bulkWrite([
-  { insertOne: { document: { name: 'X', email: 'x@co.com', age: 20 } } },
-  { updateOne: { filter: { name: 'Bob' }, update: { $inc: { age: 1 } } } },
-]);
-
-// Distinct
-const emails = await col.distinct('email', { age: { $gte: 18 } });
+const allEvents = await events.find({ type: 'click' }).toArray();
 ```
 
 ## Underlying Instances
@@ -215,25 +141,11 @@ await mongo.close();
 
 ## Full API
 
-| Method | Returns |
-|--------|---------|
-| `connect()` | `Promise<void>` |
-| `health()` / `ping()` | `{ ok, result/error }` |
-| `getInstance()` | `Db` |
-| `getClientInstance()` | `MongoClient` |
-| `getDB(name)` | `Db` |
-| `getCollection<T>(name, opts?)` | `Collection<T>` |
-| `findOne<T>(col, filter, opts?)` | `{ ok, data }` |
-| `find<T>(col, filter?, opts?)` | `{ ok, data }` |
-| `insertOne<T>(col, doc)` | `{ ok, data }` |
-| `insertMany<T>(col, docs, opts?)` | `{ ok, data }` |
-| `updateOne<T>(col, filter, update)` | `{ ok, data }` |
-| `updateMany<T>(col, filter, update)` | `{ ok, data }` |
-| `deleteOne<T>(col, filter)` | `{ ok, data }` |
-| `deleteMany<T>(col, filter)` | `{ ok, data }` |
-| `countDocuments<T>(col, filter?)` | `{ ok, data }` |
-| `aggregate<T>(col, pipeline)` | `{ ok, data }` |
-| `createIndex<T>(col, spec, opts?)` | `{ ok, data }` |
-| `listCollections()` | `{ ok, data }` |
-| `dropCollection(name)` | `{ ok }` |
-| `close()` | `Promise<void>` |
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `connect()` | `Promise<void>` | Initializes connection and verifies connection via ping |
+| `health()` / `ping()` | `{ ok: boolean, result?: any, error?: any }` | Performs admin ping |
+| `getInstance()` | `Db` | Returns the native MongoDB `Db` instance |
+| `getClientInstance()` | `MongoClient` | Returns the native `MongoClient` instance |
+| `getDB(name)` | `Db` | Returns a Db instance for a specific database |
+| `close()` | `Promise<void>` | Closes the connection pool |

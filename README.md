@@ -76,9 +76,10 @@ interface User { name: string; email: string; age: number }
 const mongo = new MongoDBConnector({ url: 'mongodb://localhost:27017', database: 'mydb' });
 await mongo.connect();
 
-await mongo.insertOne<User>('users', { name: 'Alice', email: 'alice@example.com', age: 28 });
-const result = await mongo.find<User>('users', { age: { $gte: 25 } });
-if (result.ok) console.log(result.data);
+const db = mongo.getInstance();
+await db.collection<User>('users').insertOne({ name: 'Alice', email: 'alice@example.com', age: 28 });
+const result = await db.collection<User>('users').find({ age: { $gte: 25 } }).toArray();
+console.log(result);
 
 await mongo.close();
 ```
@@ -91,12 +92,16 @@ import { RedpandaConnector } from '@rniverse/connectors';
 const rp = new RedpandaConnector({ url: 'localhost:9092' });
 await rp.connect();
 
-await rp.publish({ topic: 'events', messages: [{ value: JSON.stringify({ event: 'signup' }) }] });
+const producer = await rp.getProducer();
+await producer.send({ topic: 'events', messages: [{ value: JSON.stringify({ event: 'signup' }) }] });
+await producer.disconnect();
 
-await rp.subscribe(
-  { topics: ['events'], groupId: 'my-group', fromBeginning: true },
-  async (payload) => console.log(payload.message.value?.toString()),
-);
+const consumer = await rp.getConsumer({ groupId: 'my-group' });
+await consumer.subscribe({ topics: ['events'], fromBeginning: true });
+await consumer.run({
+  eachMessage: async (payload) => console.log(payload.message.value?.toString())
+});
+// Close consumer manually when done: await consumer.disconnect();
 
 await rp.close();
 ```
@@ -112,14 +117,12 @@ if (!h.ok) log.error({ error: h.error }, 'MongoDB down');
 
 ## Result Pattern
 
-MongoDB operations return a discriminated union — check `ok` before accessing data:
+Some operations return a discriminated union `{ ok: true, data } | { ok: false, error }`, but most Native drivers now throw errors normally. Use `try/catch` or check `health()` results:
 
 ```typescript
-const result = await mongo.findOne<User>('users', { email });
-if (result.ok) {
-  // result.data is typed
-} else {
-  // result.error is the caught exception
+const h = await mongo.health();
+if (!h.ok) {
+  // h.error contains details
 }
 ```
 

@@ -11,6 +11,7 @@ describe('Redis Comprehensive Tests', () => {
 		connector = new RedisConnector({
 			url: process.env.REDIS_URL || 'redis://localhost:6379',
 		});
+		await connector.connect();
 	});
 
 	afterAll(async () => {
@@ -305,6 +306,9 @@ describe('Redis Pub/Sub Tests', () => {
 		const subscriber = new RedisConnector({
 			url: process.env.REDIS_URL || 'redis://localhost:6379',
 		});
+
+		await publisher.connect();
+		await subscriber.connect();
 
 		const pubClient = publisher.getInstance();
 		const subClient = subscriber.getInstance();
