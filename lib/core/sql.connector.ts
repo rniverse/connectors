@@ -66,6 +66,7 @@ export class SQLConnector {
 			// Bun SQL's close is synchronous
 			this.client.$client.close();
 			this.client = null;
+			this.init_promise = null;
 			log.info('SQL connection closed');
 		}
 	}

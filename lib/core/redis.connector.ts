@@ -64,6 +64,7 @@ export class RedisConnector {
 		if (this.client) {
 			this.client.close();
 			this.client = null;
+			this.init_promise = null;
 			log.info('Redis connection closed');
 		}
 	}
