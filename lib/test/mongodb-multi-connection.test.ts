@@ -10,17 +10,17 @@ import { env } from 'bun';
 describe('MongoDB Multi-Connection Tests', () => {
 	let connector1: MongoDBConnector;
 	let connector2: MongoDBConnector;
-	const mongoUrl = env.MONGO_URL || 'mongodb://localhost:27017';
+	const mongoUrl = env.MONGODB_TEST_URL || 'mongodb://localhost:27017';
 	let db1: Db;
 	let db2: Db;
 
 	const config1: MongoDBConnectorConfig = {
-		url: `${mongoUrl}/test_db_1?authSource=admin`,
+		url: mongoUrl,
 		database: 'test_db_1',
 	};
 
 	const config2: MongoDBConnectorConfig = {
-		url: `${mongoUrl}/test_db_2?authSource=admin`,
+		url: mongoUrl,
 		database: 'test_db_2',
 	};
 
