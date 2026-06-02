@@ -89,7 +89,7 @@ export class RedpandaConnector {
 			await admin.listTopics();
 			return { ok: true as const };
 		} catch (err) {
-			log.error({ error: err }, 'Redpanda ping failed');
+			log.error(err, 'Redpanda ping failed');
 			return { ok: false as const, error: err };
 		}
 	}
@@ -117,7 +117,7 @@ export class RedpandaConnector {
 	async close(): Promise<void> {
 		if (this.adminClient) {
 			await this.adminClient.disconnect().catch((err) => {
-				log.error({ error: err }, 'Error disconnecting Redpanda admin client');
+				log.error(err, 'Error disconnecting Redpanda admin client');
 			});
 		}
 		this.adminClient = null;

@@ -363,7 +363,7 @@ Redis, SQL, MongoDB, and Redpanda native operations throw on failure. You should
 try {
   await client.set('key', 'value');
 } catch (err) {
-  log.error({ error: err }, 'redis set failed');
+  log.error(err, 'redis set failed');
 }
 ```
 

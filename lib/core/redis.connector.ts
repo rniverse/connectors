@@ -33,7 +33,7 @@ export class RedisConnector {
 			log.info('Redis connected');
 		} catch (err) {
 			this.init_promise = null; // allow retry on failure
-			log.error({ error: err }, 'Redis connection failed');
+			log.error(err, 'Redis connection failed');
 			throw err;
 		}
 	}
@@ -49,7 +49,7 @@ export class RedisConnector {
 			const result = await this.require_client().send('PING', []);
 			return { ok: true as const, data: result };
 		} catch (err) {
-			log.error({ error: err }, 'Redis ping failed');
+			log.error(err, 'Redis ping failed');
 			return { ok: false as const, error: err };
 		}
 	}
@@ -77,7 +77,7 @@ export class RedisConnector {
 			try {
 				this.client.close();
 			} catch (error) {
-				log.error({ error }, 'Error closing Redis connection');
+				log.error(error, 'Error closing Redis connection');
 			}
 		}
 		this.client = null;

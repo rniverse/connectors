@@ -112,7 +112,7 @@ All connectors expose `health()` returning `{ ok: true }` or `{ ok: false, error
 
 ```typescript
 const h = await mongo.health();
-if (!h.ok) log.error({ error: h.error }, 'MongoDB down');
+if (!h.ok) log.error(h.error, 'MongoDB down');
 ```
 
 ## Result Pattern

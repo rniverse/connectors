@@ -35,7 +35,7 @@ export class MongoDBConnector {
 			return db;
 		} catch (error) {
 			this.init_promise = null; // allow retry on failure
-			log.error({ error }, 'Failed to initialize MongoDB connector');
+			log.error(error, 'Failed to initialize MongoDB connector');
 			throw error;
 		}
 	}
@@ -58,7 +58,7 @@ export class MongoDBConnector {
 			const data = await db.admin().ping();
 			return { ok: true as const, data };
 		} catch (err) {
-			log.error({ error: err }, 'MongoDB ping failed');
+			log.error(err, 'MongoDB ping failed');
 			return { ok: false as const, error: err };
 		}
 	}
@@ -94,7 +94,7 @@ export class MongoDBConnector {
 	async close(): Promise<void> {
 		if (this.client) {
 			await this.client.close().catch((err) => {
-				log.error({ error: err }, 'Error closing MongoDB connection');
+				log.error(err, 'Error closing MongoDB connection');
 			});
 		}
 		this.client = null;

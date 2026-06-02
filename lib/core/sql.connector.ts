@@ -34,7 +34,7 @@ export class SQLConnector {
 			log.info('SQL connected');
 		} catch (err) {
 			this.init_promise = null; // allow retry on failure
-			log.error({ error: err }, 'SQL connection failed');
+			log.error(err, 'SQL connection failed');
 			throw err;
 		}
 	}
@@ -50,7 +50,7 @@ export class SQLConnector {
 			await this.require_client().$client`SELECT 1`;
 			return { ok: true as const };
 		} catch (err) {
-			log.error({ error: err }, 'SQL ping failed');
+			log.error(err, 'SQL ping failed');
 			return { ok: false as const, error: err };
 		}
 	}
@@ -76,7 +76,7 @@ export class SQLConnector {
 	async close(): Promise<void> {
 		if (this.client) {
 			this.client.$client.close().catch((err) => {
-				log.error({ error: err }, 'Error closing SQL connection');
+				log.error(err, 'Error closing SQL connection');
 			});
 		}
 		this.client = null;
