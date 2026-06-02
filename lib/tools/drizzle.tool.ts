@@ -9,7 +9,10 @@ import type {
 } from 'lib/types/sql.type';
 
 export function initORM(connection: SQLConnectorConfig) {
-	const { url, ...rest } = connection as { url?: string } & Record<string, unknown>;
+	const { url, ...rest } = connection as { url?: string } & Record<
+		string,
+		unknown
+	>;
 
 	// Default pool options (timeouts in seconds for Bun SQL)
 	const defaults: Partial<SQLConnectorOptionsConfig> = {

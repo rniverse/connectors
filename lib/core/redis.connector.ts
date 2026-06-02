@@ -3,6 +3,7 @@
 import { log } from '@rniverse/utils';
 import { initRedis } from '@tools/redis.tool';
 import type { RedisConnectorConfig } from '@type/redis.type';
+import { sleep } from 'bun';
 
 export class RedisConnector {
 	private client: ReturnType<typeof initRedis> | null = null;
@@ -38,7 +39,8 @@ export class RedisConnector {
 	}
 
 	private require_client() {
-		if (!this.client) throw new Error('Redis not connected — call connect() first');
+		if (!this.client)
+			throw new Error('Redis not connected — call connect() first');
 		return this.client;
 	}
 
@@ -53,7 +55,17 @@ export class RedisConnector {
 	}
 
 	async health() {
-		return this.ping();
+		const maxRetries = Number(process.env.MAX_HEALTH_RETRIES ?? 3);
+		let result: any = { ok: false };
+		for (let i = 0; i < maxRetries && !result.ok; i++) {
+			if (i > 0) {
+				log.warn(`Redis health check failed, retrying... (${i}/${maxRetries})`);
+				await sleep(1000 * i);
+			}
+			result = await this.ping();
+		}
+		if (!result.ok) await this.close();
+		return result;
 	}
 
 	getInstance() {
@@ -62,10 +74,14 @@ export class RedisConnector {
 
 	async close(): Promise<void> {
 		if (this.client) {
-			this.client.close();
-			this.client = null;
-			this.init_promise = null;
-			log.info('Redis connection closed');
+			try {
+				this.client.close();
+			} catch (error) {
+				log.error({ error }, 'Error closing Redis connection');
+			}
 		}
+		this.client = null;
+		this.init_promise = null;
+		log.info('Redis connection closed');
 	}
 }

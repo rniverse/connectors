@@ -1,7 +1,14 @@
 // lib/migrations/schema.sample.ts
 // Sample Drizzle schema — copy and adapt for your tables.
 
-import { pgTable, serial, text, integer, timestamp, boolean } from 'drizzle-orm/pg-core';
+import {
+	boolean,
+	integer,
+	pgTable,
+	serial,
+	text,
+	timestamp,
+} from 'drizzle-orm/pg-core';
 
 export const users = pgTable('users', {
 	id: serial('id').primaryKey(),

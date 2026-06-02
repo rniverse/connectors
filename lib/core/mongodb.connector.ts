@@ -1,11 +1,9 @@
 // lib/core/mongodb.connector.ts
 
 import { log } from '@rniverse/utils';
-import { closeMongoDB, initMongoDB } from '@tools/mongodb.tool';
-import {
-	type Db,
-	type MongoClient,
-} from 'mongodb';
+import { initMongoDB } from '@tools/mongodb.tool';
+import { sleep } from 'bun';
+import type { Db, MongoClient } from 'mongodb';
 import type { MongoDBConnectorConfig } from '../types/mongodb.type';
 
 export class MongoDBConnector {
@@ -43,12 +41,14 @@ export class MongoDBConnector {
 	}
 
 	private require_db(): Db {
-		if (!this.db) throw new Error('MongoDB not connected — call connect() first');
+		if (!this.db)
+			throw new Error('MongoDB not connected — call connect() first');
 		return this.db;
 	}
 
 	private require_client(): MongoClient {
-		if (!this.client) throw new Error('MongoDB not connected — call connect() first');
+		if (!this.client)
+			throw new Error('MongoDB not connected — call connect() first');
 		return this.client;
 	}
 
@@ -64,7 +64,19 @@ export class MongoDBConnector {
 	}
 
 	async health() {
-		return this.ping();
+		const maxRetries = Number(process.env.MAX_HEALTH_RETRIES ?? 3);
+		let result: any = { ok: false };
+		for (let i = 0; i < maxRetries && !result.ok; i++) {
+			if (i > 0) {
+				log.warn(
+					`MongoDB health check failed, retrying... (${i}/${maxRetries})`,
+				);
+				await sleep(1000 * i);
+			}
+			result = await this.ping();
+		}
+		if (!result.ok) await this.close();
+		return result;
 	}
 
 	getClientInstance(): MongoClient {
@@ -81,10 +93,13 @@ export class MongoDBConnector {
 
 	async close(): Promise<void> {
 		if (this.client) {
-			await closeMongoDB(this.client);
-			this.client = null;
-			this.db = null;
-			this.init_promise = null;
+			await this.client.close().catch((err) => {
+				log.error({ error: err }, 'Error closing MongoDB connection');
+			});
 		}
+		this.client = null;
+		this.db = null;
+		this.init_promise = null;
+		log.info('MongoDB connection closed');
 	}
 }

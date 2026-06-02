@@ -3,6 +3,7 @@
 import { log } from '@rniverse/utils';
 import { initORM } from '@tools';
 import type { SQLConnectorConfig } from '@type/sql.type';
+import { sleep } from 'bun';
 
 export class SQLConnector {
 	private client: ReturnType<typeof initORM> | null = null;
@@ -39,7 +40,8 @@ export class SQLConnector {
 	}
 
 	private require_client() {
-		if (!this.client) throw new Error('SQL not connected — call connect() first');
+		if (!this.client)
+			throw new Error('SQL not connected — call connect() first');
 		return this.client;
 	}
 
@@ -54,7 +56,17 @@ export class SQLConnector {
 	}
 
 	async health() {
-		return this.ping();
+		const maxRetries = Number(process.env.MAX_HEALTH_RETRIES ?? 3);
+		let result: any = { ok: false };
+		for (let i = 0; i < maxRetries && !result.ok; i++) {
+			if (i > 0) {
+				log.warn(`SQL health check failed, retrying... (${i}/${maxRetries})`);
+				await sleep(1000 * i);
+			}
+			result = await this.ping();
+		}
+		if (!result.ok) await this.close();
+		return result;
 	}
 
 	getInstance() {
@@ -63,11 +75,12 @@ export class SQLConnector {
 
 	async close(): Promise<void> {
 		if (this.client) {
-			// Bun SQL's close is synchronous
-			this.client.$client.close();
-			this.client = null;
-			this.init_promise = null;
-			log.info('SQL connection closed');
+			this.client.$client.close().catch((err) => {
+				log.error({ error: err }, 'Error closing SQL connection');
+			});
 		}
+		this.client = null;
+		this.init_promise = null;
+		log.info('SQL connection closed');
 	}
 }

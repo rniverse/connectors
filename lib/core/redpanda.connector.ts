@@ -6,6 +6,7 @@ import type {
 	RedpandaConnectorConfig,
 	RedpandaConnectorURLConfig,
 } from '@type/redpanda.type';
+import { sleep } from 'bun';
 import type { Admin, ConsumerConfig, ProducerConfig } from 'kafkajs';
 import { Partitioners } from 'kafkajs';
 
@@ -57,7 +58,9 @@ export class RedpandaConnector {
 	 * Create and connect a new Producer.
 	 * Caller is responsible for calling producer.disconnect() when done.
 	 */
-	async getProducer(config?: Partial<ProducerConfig>): Promise<ReturnType<typeof this.kafka.producer>> {
+	async getProducer(
+		config?: Partial<ProducerConfig>,
+	): Promise<ReturnType<typeof this.kafka.producer>> {
 		const producer = this.kafka.producer({
 			createPartitioner: Partitioners.DefaultPartitioner,
 			...config,
@@ -71,7 +74,9 @@ export class RedpandaConnector {
 	 * Create and connect a new Consumer.
 	 * Caller is responsible for calling consumer.disconnect() when done.
 	 */
-	async getConsumer(config: ConsumerConfig): Promise<ReturnType<typeof this.kafka.consumer>> {
+	async getConsumer(
+		config: ConsumerConfig,
+	): Promise<ReturnType<typeof this.kafka.consumer>> {
 		const consumer = this.kafka.consumer(config);
 		await consumer.connect();
 		log.info({ groupId: config.groupId }, 'Redpanda consumer connected');
@@ -90,7 +95,19 @@ export class RedpandaConnector {
 	}
 
 	async health() {
-		return this.ping();
+		const maxRetries = Number(process.env.MAX_HEALTH_RETRIES ?? 3);
+		let result: any = { ok: false };
+		for (let i = 0; i < maxRetries && !result.ok; i++) {
+			if (i > 0) {
+				log.warn(
+					`Redpanda health check failed, retrying... (${i}/${maxRetries})`,
+				);
+				await sleep(1000 * i);
+			}
+			result = await this.ping();
+		}
+		if (!result.ok) await this.close();
+		return result;
 	}
 
 	getInstance() {
@@ -99,10 +116,12 @@ export class RedpandaConnector {
 
 	async close(): Promise<void> {
 		if (this.adminClient) {
-			await this.adminClient.disconnect();
-			this.adminClient = null;
-			this.admin_promise = null;
+			await this.adminClient.disconnect().catch((err) => {
+				log.error({ error: err }, 'Error disconnecting Redpanda admin client');
+			});
 		}
+		this.adminClient = null;
+		this.admin_promise = null;
 		log.info('Redpanda connections closed');
 	}
 }

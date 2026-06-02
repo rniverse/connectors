@@ -3,7 +3,7 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { RedpandaConnector } from '@core/redpanda.connector';
 import { log } from '@rniverse/utils';
-import type { Admin, Consumer, Producer } from 'kafkajs';
+import type { Admin } from 'kafkajs';
 
 const REDPANDA_URL = process.env.REDPANDA_URL || 'localhost:9092';
 
@@ -55,7 +55,10 @@ describe('Redpanda Connector Tests', () => {
 		const result = await producer.send({
 			topic: testTopic,
 			messages: [
-				{ key: 'test-key', value: JSON.stringify({ message: 'Hello Redpanda!' }) },
+				{
+					key: 'test-key',
+					value: JSON.stringify({ message: 'Hello Redpanda!' }),
+				},
 			],
 		});
 		log.info(`Publish Result: ${JSON.stringify(result)}`);
@@ -133,11 +136,15 @@ describe('Redpanda Connector Tests', () => {
 		const producer = await connector.getProducer();
 		await producer.send({
 			topic: topic1,
-			messages: [{ key: 't1', value: JSON.stringify({ source: 'topic1', data: 'A' }) }],
+			messages: [
+				{ key: 't1', value: JSON.stringify({ source: 'topic1', data: 'A' }) },
+			],
 		});
 		await producer.send({
 			topic: topic2,
-			messages: [{ key: 't2', value: JSON.stringify({ source: 'topic2', data: 'B' }) }],
+			messages: [
+				{ key: 't2', value: JSON.stringify({ source: 'topic2', data: 'B' }) },
+			],
 		});
 		await producer.disconnect();
 
@@ -181,7 +188,12 @@ describe('Redpanda Connector Tests', () => {
 		const producer = await connector.getProducer();
 		await producer.send({
 			topic: testTopic,
-			messages: [{ key: 'retry-msg', value: JSON.stringify({ id: 1, text: 'Retry me' }) }],
+			messages: [
+				{
+					key: 'retry-msg',
+					value: JSON.stringify({ id: 1, text: 'Retry me' }),
+				},
+			],
 		});
 		await producer.disconnect();
 
@@ -267,17 +279,19 @@ describe('Redpanda Connector Tests', () => {
 					// DLQ: forward the failed message to the dead letter topic
 					await producer.send({
 						topic: dlqTopic,
-						messages: [{
-							key: message.key?.toString(),
-							value: JSON.stringify({
-								original_message: parsed,
-								error: err.message,
-								source_topic: topic,
-								source_partition: partition,
-								source_offset: message.offset,
-								failed_at: new Date().toISOString(),
-							}),
-						}],
+						messages: [
+							{
+								key: message.key?.toString(),
+								value: JSON.stringify({
+									original_message: parsed,
+									error: err.message,
+									source_topic: topic,
+									source_partition: partition,
+									source_offset: message.offset,
+									failed_at: new Date().toISOString(),
+								}),
+							},
+						],
 					});
 					log.info(`Dead-lettered: id=${parsed.id}, error=${err.message}`);
 				}
@@ -358,11 +372,13 @@ describe('Redpanda Connector Tests', () => {
 				log.info(`Processing (manual commit): ${JSON.stringify(parsed)}`);
 
 				// Manually commit the offset after successful processing
-				await consumer.commitOffsets([{
-					topic,
-					partition,
-					offset: (Number(message.offset) + 1).toString(),
-				}]);
+				await consumer.commitOffsets([
+					{
+						topic,
+						partition,
+						offset: (Number(message.offset) + 1).toString(),
+					},
+				]);
 
 				// Send heartbeat to keep consumer alive during long processing
 				await heartbeat();
@@ -410,7 +426,13 @@ describe('Redpanda Connector Tests', () => {
 
 		await consumer.subscribe({ topic: testTopic, fromBeginning: true });
 		await consumer.run({
-			eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
+			eachBatch: async ({
+				batch,
+				resolveOffset,
+				heartbeat,
+				isRunning,
+				isStale,
+			}) => {
 				const batchInfo = {
 					topic: batch.topic,
 					partition: batch.partition,
@@ -442,7 +464,9 @@ describe('Redpanda Connector Tests', () => {
 		expect(allMessages[4].id).toBe(5);
 		expect(batches.length).toBeGreaterThanOrEqual(1);
 		expect(batches[0].topic).toBe(testTopic);
-		log.info(`Processed ${allMessages.length} messages in ${batches.length} batch(es)`);
+		log.info(
+			`Processed ${allMessages.length} messages in ${batches.length} batch(es)`,
+		);
 
 		// Clean up
 		await consumer.disconnect();

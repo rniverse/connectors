@@ -3,7 +3,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { MongoDBConnector } from '@core/mongodb.connector';
 import { log } from '@rniverse/utils';
-import { Db } from 'mongodb';
+import type { Db } from 'mongodb';
 
 interface User {
 	_id?: any;
@@ -19,15 +19,6 @@ interface Product {
 	category: string;
 	price: number;
 	stock: number;
-}
-
-interface Order {
-	_id?: any;
-	userId: string;
-	productName: string;
-	quantity: number;
-	price: number;
-	orderDate?: Date;
 }
 
 describe('MongoDB Connector Tests', () => {
@@ -111,33 +102,40 @@ describe('MongoDB Connector Tests', () => {
 	});
 
 	test('FIND - With Filter', async () => {
-		const result = await db.collection(usersCollection).find({
-			username: 'alice',
-		}).toArray();
+		const result = await db
+			.collection(usersCollection)
+			.find({
+				username: 'alice',
+			})
+			.toArray();
 
 		expect(result?.length).toBe(1);
 		expect(result?.[0]?.username).toBe('alice');
 	});
 
 	test('FIND - With Query Operators', async () => {
-		const result = await db.collection(usersCollection).find({
-			age: { $gt: 25 },
-		}).toArray();
+		const result = await db
+			.collection(usersCollection)
+			.find({
+				age: { $gt: 25 },
+			})
+			.toArray();
 
 		expect(result?.length ?? 0).toBeGreaterThan(0);
 		expect(result?.every((user) => user.age > 25)).toBe(true);
 	});
 
 	test('FIND - With Projection and Sort', async () => {
-		const result = await db.collection(usersCollection).find(
-			{},
-			{ projection: { username: 1, age: 1 }, sort: { age: -1 }, limit: 2 },
-		).toArray();
+		const result = await db
+			.collection(usersCollection)
+			.find(
+				{},
+				{ projection: { username: 1, age: 1 }, sort: { age: -1 }, limit: 2 },
+			)
+			.toArray();
 		expect(result?.length).toBeLessThanOrEqual(2);
 		if (result && result.length > 1) {
-			expect(result[0]?.age).toBeGreaterThanOrEqual(
-				result[1]?.age ?? 0,
-			);
+			expect(result[0]?.age).toBeGreaterThanOrEqual(result[1]?.age ?? 0);
 		}
 	});
 
@@ -151,10 +149,9 @@ describe('MongoDB Connector Tests', () => {
 	});
 
 	test('UPDATE - Single Document', async () => {
-		const result = await db.collection(usersCollection).updateOne(
-			{ username: 'alice' },
-			{ $set: { age: 26 } },
-		);
+		const result = await db
+			.collection(usersCollection)
+			.updateOne({ username: 'alice' }, { $set: { age: 26 } });
 
 		expect(result.matchedCount).toBe(1);
 		expect(result.modifiedCount).toBe(1);
@@ -166,10 +163,9 @@ describe('MongoDB Connector Tests', () => {
 	});
 
 	test('UPDATE - Multiple Documents', async () => {
-		const result = await db.collection(usersCollection).updateMany(
-			{ age: { $gte: 30 } },
-			{ $inc: { age: 1 } },
-		);
+		const result = await db
+			.collection(usersCollection)
+			.updateMany({ age: { $gte: 30 } }, { $inc: { age: 1 } });
 
 		expect(result.matchedCount).toBeGreaterThan(0);
 		expect(result.modifiedCount).toBeGreaterThan(0);
@@ -230,38 +226,45 @@ describe('MongoDB Connector Tests', () => {
 	});
 
 	test('AGGREGATE - Group By', async () => {
-		const result = await db.collection(productsCollection).aggregate([
-			{
-				$group: {
-					_id: '$category',
-					totalStock: { $sum: '$stock' },
-					avgPrice: { $avg: '$price' },
-					count: { $sum: 1 },
+		const result = await db
+			.collection(productsCollection)
+			.aggregate([
+				{
+					$group: {
+						_id: '$category',
+						totalStock: { $sum: '$stock' },
+						avgPrice: { $avg: '$price' },
+						count: { $sum: 1 },
+					},
 				},
-			},
-		]).toArray();
+			])
+			.toArray();
 
 		expect(result.length).toBeGreaterThan(0);
 	});
 
 	test('AGGREGATE - Match and Project', async () => {
-		const result = await db.collection(productsCollection).aggregate([
-			{ $match: { category: 'Electronics' } },
-			{ $project: { name: 1, price: 1, category: 1 } },
-			{ $sort: { price: -1 } },
-		]).toArray();
+		const result = await db
+			.collection(productsCollection)
+			.aggregate([
+				{ $match: { category: 'Electronics' } },
+				{ $project: { name: 1, price: 1, category: 1 } },
+				{ $sort: { price: -1 } },
+			])
+			.toArray();
 
 		expect(result.length).toBeGreaterThan(0);
-		expect(result.every((p: any) => p.category === 'Electronics')).toBe(
-			true,
-		);
+		expect(result.every((p: any) => p.category === 'Electronics')).toBe(true);
 	});
 
 	test('AGGREGATE - Lookup (Join)', async () => {
 		// Create orders that reference users
-		const usersResult = await db.collection(usersCollection).find({
-			username: 'alice',
-		}).toArray();
+		const usersResult = await db
+			.collection(usersCollection)
+			.find({
+				username: 'alice',
+			})
+			.toArray();
 		if (usersResult.length > 0) {
 			const userId = usersResult[0]?._id?.toString();
 
@@ -273,17 +276,20 @@ describe('MongoDB Connector Tests', () => {
 					price: 999.99,
 				});
 
-				const result = await db.collection(ordersCollection).aggregate([
-					{
-						$lookup: {
-							from: usersCollection,
-							localField: 'userId',
-							foreignField: '_id',
-							as: 'userDetails',
+				const result = await db
+					.collection(ordersCollection)
+					.aggregate([
+						{
+							$lookup: {
+								from: usersCollection,
+								localField: 'userId',
+								foreignField: '_id',
+								as: 'userDetails',
+							},
 						},
-					},
-					{ $limit: 10 },
-				]).toArray();
+						{ $limit: 10 },
+					])
+					.toArray();
 
 				expect(result.length).toBeGreaterThan(0);
 			}
@@ -291,10 +297,9 @@ describe('MongoDB Connector Tests', () => {
 	});
 
 	test('CREATE INDEX', async () => {
-		const result = await db.collection(usersCollection).createIndex(
-			{ email: 1 },
-			{ unique: true, name: 'email_unique_idx' },
-		);
+		const result = await db
+			.collection(usersCollection)
+			.createIndex({ email: 1 }, { unique: true, name: 'email_unique_idx' });
 
 		expect(result).toBeDefined();
 	});
@@ -316,9 +321,12 @@ describe('MongoDB Connector Tests', () => {
 		]);
 
 		// Find with complex filter
-		const result = await db.collection(usersCollection).find({
-			$and: [{ email: { $regex: /bulk/ } }, { age: { $gte: 20, $lte: 30 } }],
-		}).toArray();
+		const result = await db
+			.collection(usersCollection)
+			.find({
+				$and: [{ email: { $regex: /bulk/ } }, { age: { $gte: 20, $lte: 30 } }],
+			})
+			.toArray();
 
 		expect(result.length).toBeGreaterThanOrEqual(3);
 	});
@@ -366,9 +374,12 @@ describe('MongoDB Connector Tests', () => {
 		]);
 
 		// Text search
-		const result = await db.collection(searchCollection).find({
-			$text: { $search: 'JavaScript TypeScript' },
-		}).toArray();
+		const result = await db
+			.collection(searchCollection)
+			.find({
+				$text: { $search: 'JavaScript TypeScript' },
+			})
+			.toArray();
 
 		expect(result.length).toBeGreaterThan(0);
 
@@ -384,7 +395,7 @@ describe('MongoDB Connector Tests', () => {
 
 		// Iterate using forEach
 		for (let i = 0; i < 3; i++) {
-			const doc = await cursor.next() as User;
+			const doc = (await cursor.next()) as User;
 			if (doc) users.push(doc);
 		}
 
@@ -401,7 +412,7 @@ describe('MongoDB Connector Tests', () => {
 
 		// Manual iteration
 		while (await cursor.hasNext()) {
-			const doc = await cursor.next() as Product;
+			const doc = (await cursor.next()) as Product;
 			if (doc) products.push(doc);
 		}
 
@@ -420,7 +431,7 @@ describe('MongoDB Connector Tests', () => {
 		// Process cursor in batches
 		let hasMore = true;
 		while (hasMore) {
-			const batch = await cursor.toArray() as User[];
+			const batch = (await cursor.toArray()) as User[];
 			if (batch.length === 0) {
 				hasMore = false;
 			} else {
@@ -472,7 +483,7 @@ describe('MongoDB Connector Tests', () => {
 
 		// Iterate
 		for (let i = 0; i < 3; i++) {
-			const doc = await cursor.next() as User;
+			const doc = (await cursor.next()) as User;
 			if (doc) users.push(doc);
 		}
 

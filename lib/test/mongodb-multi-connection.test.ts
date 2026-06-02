@@ -3,9 +3,9 @@
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { MongoDBConnector } from '@core/mongodb.connector';
-import type { MongoDBConnectorConfig } from '../types/mongodb.type';
-import type { Db } from 'mongodb';
 import { env } from 'bun';
+import type { Db } from 'mongodb';
+import type { MongoDBConnectorConfig } from '../types/mongodb.type';
 
 describe('MongoDB Multi-Connection Tests', () => {
 	let connector1: MongoDBConnector;

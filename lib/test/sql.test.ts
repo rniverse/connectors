@@ -195,7 +195,9 @@ describe('SQL Tool Tests', () => {
 		await client.transaction(async (tx) => {
 			// Declare a cursor for streaming
 			await tx.execute(
-				sql.raw('DECLARE stream_cursor CURSOR FOR SELECT * FROM users ORDER BY id'),
+				sql.raw(
+					'DECLARE stream_cursor CURSOR FOR SELECT * FROM users ORDER BY id',
+				),
 			);
 
 			// Stream rows one at a time using FETCH in a loop
