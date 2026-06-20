@@ -15,6 +15,8 @@ export class RedpandaConnector {
 	private adminClient: Admin | null = null;
 	private admin_promise: Promise<Admin> | null = null;
 	private config: RedpandaConnectorConfig | RedpandaConnectorURLConfig;
+	private consumers = new Set<ReturnType<typeof this.kafka.consumer>>();
+	private producers = new Set<ReturnType<typeof this.kafka.producer>>();
 
 	constructor(config: RedpandaConnectorConfig | RedpandaConnectorURLConfig) {
 		this.config = config;
@@ -67,6 +69,7 @@ export class RedpandaConnector {
 		});
 		await producer.connect();
 		log.info('Redpanda producer connected');
+		this.producers.add(producer);
 		return producer;
 	}
 
@@ -79,6 +82,7 @@ export class RedpandaConnector {
 	): Promise<ReturnType<typeof this.kafka.consumer>> {
 		const consumer = this.kafka.consumer(config);
 		await consumer.connect();
+		this.consumers.add(consumer);
 		log.info({ groupId: config.groupId }, 'Redpanda consumer connected');
 		return consumer;
 	}
@@ -122,6 +126,18 @@ export class RedpandaConnector {
 		}
 		this.adminClient = null;
 		this.admin_promise = null;
+		for (const consumer of this.consumers) {
+			await consumer.disconnect().catch((err) => {
+				log.error(err, 'Error disconnecting Redpanda consumer');
+			});
+		}
+		this.consumers.clear();
+		for (const producer of this.producers) {
+			await producer.disconnect().catch((err) => {
+				log.error(err, 'Error disconnecting Redpanda producer');
+			});
+		}
+		this.producers.clear();
 		log.info('Redpanda connections closed');
 	}
 }
