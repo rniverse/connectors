@@ -4,6 +4,7 @@
 	"module": "index.ts",
 	"scripts": {
 		"lint": "biome check --write",
+		"build": "bun run tsc --project tsconfig.build.json",
 		"biome": "biome",
 		"db:generate": "drizzle-kit generate",
 		"db:migrate": "drizzle-kit migrate",
