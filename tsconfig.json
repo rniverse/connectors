@@ -26,6 +26,7 @@
 		"noUnusedParameters": false,
 		"noPropertyAccessFromIndexSignature": false,
 		"baseUrl": ".",
+		"ignoreDeprecations": "6.0",
 		"paths": {
 			"@tools": ["lib/tools"],
 			"@tools/*": ["lib/tools/*"],

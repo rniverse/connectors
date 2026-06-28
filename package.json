@@ -2,6 +2,8 @@
 	"name": "@rniverse/connectors",
 	"version": "0.0.1",
 	"module": "index.ts",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
 	"scripts": {
 		"lint": "biome check --write",
 		"build": "bun run tsc --project tsconfig.build.json",
@@ -23,7 +25,7 @@
 		"kafkajs": "^2.2.4",
 		"mongodb": "^6.20.0",
 		"@valkey/valkey-glide": "^2.4.1",
-		"typescript": "^5"
+		"typescript": "^6"
 	},
 	"private": true,
 	"type": "module",
