@@ -1,0 +1,1 @@
+{"version":3,"file":"mongodb.tool.d.ts","sourceRoot":"","sources":["../../../lib/tools/mongodb.tool.ts"],"names":[],"mappings":"AAGA,OAAO,EAAE,WAAW,EAAE,MAAM,SAAS,CAAC;AACtC,OAAO,KAAK,EAAE,sBAAsB,EAAE,MAAM,uBAAuB,CAAC;AAYpE,wBAAsB,WAAW,CAAC,MAAM,EAAE,sBAAsB;;;GA0B/D;AAYD,wBAAsB,YAAY,CAAC,MAAM,EAAE,WAAW,iBAKrD"}
