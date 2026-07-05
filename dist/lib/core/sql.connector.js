@@ -1,7 +1,6 @@
 // lib/core/sql.connector.ts
-import { log } from '@rniverse/utils';
+import { log, sleep } from '@rniverse/utils';
 import { initORM } from '@tools';
-import { sleep } from 'bun';
 export class SQLConnector {
     client = null;
     config;
@@ -67,7 +66,7 @@ export class SQLConnector {
     }
     async close() {
         if (this.client) {
-            this.client.$client.close().catch((err) => {
+            this.client.$client.end().catch((err) => {
                 log.error(err, 'Error closing SQL connection');
             });
         }

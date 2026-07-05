@@ -91,7 +91,7 @@ describe('Redis Comprehensive Tests', () => {
         const key = `${testPrefix}:tags`;
         await client.sadd(key, 'javascript');
         await client.sadd(key, 'typescript');
-        await client.sadd(key, 'bun');
+        await client.sadd(key, 'kafka');
         const members = await client.smembers(key);
         expect(members.length).toBe(3);
         expect(members).toContain('javascript');

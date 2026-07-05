@@ -20,8 +20,8 @@ export declare class SQLConnector {
         error: unknown;
     }>;
     health(): Promise<any>;
-    getInstance(): import("drizzle-orm/bun-sql").BunSQLDatabase<Record<string, never>> & {
-        $client: Bun.SQL;
+    getInstance(): import("drizzle-orm/postgres-js").PostgresJsDatabase<Record<string, never>> & {
+        $client: import("postgres").Sql<{}>;
     };
     close(): Promise<void>;
 }

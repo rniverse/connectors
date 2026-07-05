@@ -1,8 +1,7 @@
 // lib/core/redis.connector.ts
-import { log } from '@rniverse/utils';
+import { log, sleep } from '@rniverse/utils';
 import { initRedis } from '@tools/redis.tool';
 import { GlideClient, TimeUnit, } from '@valkey/valkey-glide';
-import { sleep } from 'bun';
 export class GlideClientAdapter {
     glideClient;
     config;

@@ -1,7 +1,6 @@
 // lib/core/redpanda.connector.ts
-import { log } from '@rniverse/utils';
+import { log, sleep } from '@rniverse/utils';
 import { initRedpanda } from '@tools/redpanda.tool';
-import { sleep } from 'bun';
 import { Partitioners } from 'kafkajs';
 export class RedpandaConnector {
     kafka;

@@ -1,7 +1,6 @@
 // lib/core/mongodb.connector.ts
-import { log } from '@rniverse/utils';
+import { log, sleep } from '@rniverse/utils';
 import { initMongoDB } from '@tools/mongodb.tool';
-import { sleep } from 'bun';
 export class MongoDBConnector {
     db = null;
     client = null;
