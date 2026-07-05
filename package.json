@@ -24,6 +24,7 @@
 		"drizzle-orm": "^0.44.7",
 		"kafkajs": "^2.2.4",
 		"mongodb": "^6.20.0",
+		"postgres": "^3.4.9",
 		"@valkey/valkey-glide": "^2.4.1",
 		"typescript": "^6"
 	},
