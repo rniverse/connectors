@@ -54,7 +54,7 @@ describe('SQL Tool Tests', () => {
 		if (!client) throw new Error('No client');
 		const username = `testuser_${Date.now()}`;
 		const email = `${username}@test.com`;
-		const result =
+		const result: any =
 			await client.$client`INSERT INTO users (username, email, age) VALUES (${username}, ${email}, 25) RETURNING *`;
 		expect(result[0].username).toBe(username);
 	});
@@ -62,7 +62,7 @@ describe('SQL Tool Tests', () => {
 	test('UPDATE', async () => {
 		const client = connector.getInstance();
 		if (!client) throw new Error('No client');
-		const result =
+		const result: any =
 			await client.$client`UPDATE users SET age = 26 WHERE username = 'alice' RETURNING *`;
 		expect(result[0].age).toBe(26);
 	});
@@ -73,7 +73,7 @@ describe('SQL Tool Tests', () => {
 		const username = `deleteuser_${Date.now()}`;
 		const email = `${username}@test.com`;
 		await client.$client`INSERT INTO users (username, email, age) VALUES (${username}, ${email}, 99)`;
-		const deleteResult =
+		const deleteResult: any =
 			await client.$client`DELETE FROM users WHERE username = ${username} RETURNING *`;
 		expect(deleteResult[0].username).toBe(username);
 	});
@@ -81,7 +81,7 @@ describe('SQL Tool Tests', () => {
 	test('JOIN', async () => {
 		const client = connector.getInstance();
 		if (!client) throw new Error('No client');
-		const results =
+		const results: any =
 			await client.$client`SELECT u.username, o.product_name FROM users u INNER JOIN orders o ON u.id = o.user_id`;
 		expect(results.length).toBeGreaterThan(0);
 	});
@@ -89,7 +89,7 @@ describe('SQL Tool Tests', () => {
 	test('AGGREGATE', async () => {
 		const client = connector.getInstance();
 		if (!client) throw new Error('No client');
-		const stats =
+		const stats: any =
 			await client.$client`SELECT COUNT(*) as total, AVG(price) as avg_price FROM orders`;
 		expect(Number(stats[0].total)).toBeGreaterThan(0);
 	});
@@ -97,7 +97,7 @@ describe('SQL Tool Tests', () => {
 	test('WINDOW FUNCTION', async () => {
 		const client = connector.getInstance();
 		if (!client) throw new Error('No client');
-		const results =
+		const results: any =
 			await client.$client`SELECT username, age, ROW_NUMBER() OVER (ORDER BY age DESC) as rank FROM users`;
 		expect(Number(results[0].rank)).toBe(1);
 	});
