@@ -1,12 +1,11 @@
 // lib/core/redpanda.connector.ts
 
-import { log } from '@rniverse/utils';
+import { log, sleep } from '@rniverse/utils';
 import { initRedpanda } from '@tools/redpanda.tool';
 import type {
 	RedpandaConnectorConfig,
 	RedpandaConnectorURLConfig,
 } from '@type/redpanda.type';
-import { sleep } from 'bun';
 import type { Admin, ConsumerConfig, ProducerConfig } from 'kafkajs';
 import { Partitioners } from 'kafkajs';
 

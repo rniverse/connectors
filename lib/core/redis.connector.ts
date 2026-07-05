@@ -1,6 +1,6 @@
 // lib/core/redis.connector.ts
 
-import { log } from '@rniverse/utils';
+import { log, sleep } from '@rniverse/utils';
 import { initRedis } from '@tools/redis.tool';
 import type { RedisConnectorConfig } from '@type/redis.type';
 import {
@@ -9,7 +9,6 @@ import {
 	type PubSubMsg,
 	TimeUnit,
 } from '@valkey/valkey-glide';
-import { sleep } from 'bun';
 
 export class GlideClientAdapter {
 	private subscriptions = new Map<string, any>();

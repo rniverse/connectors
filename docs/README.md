@@ -136,7 +136,7 @@ await client.hset('user:1', 'name', 'John');
 const name = await client.hget('user:1', 'name');
 
 // Sets
-await client.sadd('tags', 'ts', 'bun');
+await client.sadd('tags', 'ts', 'js');
 const members = await client.smembers('tags');
 
 // Commands via send()

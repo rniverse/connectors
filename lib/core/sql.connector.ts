@@ -1,9 +1,8 @@
 // lib/core/sql.connector.ts
 
-import { log } from '@rniverse/utils';
+import { log, sleep } from '@rniverse/utils';
 import { initORM } from '@tools';
 import type { SQLConnectorConfig } from '@type/sql.type';
-import { sleep } from 'bun';
 
 export class SQLConnector {
 	private client: ReturnType<typeof initORM> | null = null;
@@ -75,7 +74,7 @@ export class SQLConnector {
 
 	async close(): Promise<void> {
 		if (this.client) {
-			this.client.$client.close().catch((err) => {
+			this.client.$client.end().catch((err: unknown) => {
 				log.error(err, 'Error closing SQL connection');
 			});
 		}

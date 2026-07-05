@@ -88,7 +88,7 @@ const job   = await client.send('LPOP', ['queue']);               // 'job-1'
 ### Sets
 
 ```typescript
-await client.sadd('tags', 'ts', 'bun', 'redis');
+await client.sadd('tags', 'ts', 'js', 'redis');
 const members  = await client.smembers('tags');
 const isMember = await client.sismember('tags', 'ts'); // 1 | 0
 ```
