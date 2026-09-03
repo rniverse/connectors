@@ -6,6 +6,7 @@
 	"types": "dist/index.d.ts",
 	"scripts": {
 		"lint": "biome check --write",
+		"test": "bun test",
 		"build": "bun run tsc --project tsconfig.build.json",
 		"biome": "biome",
 		"db:generate": "drizzle-kit generate",
@@ -15,18 +16,18 @@
 		"db:studio": "drizzle-kit studio"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.3.4",
-		"@types/bun": "latest",
-		"drizzle-kit": "^0.31.9"
+		"@biomejs/biome": "^2.5.12",
+		"@types/bun": "^1.4.0",
+		"drizzle-kit": "^0.31.10"
 	},
 	"peerDependencies": {
 		"@rniverse/utils": "github:rniverse/utils#dist",
-		"drizzle-orm": "^0.44.7",
+		"@valkey/valkey-glide": "^2.5.2",
+		"drizzle-orm": "^0.45.2",
 		"kafkajs": "^2.2.4",
-		"mongodb": "^6.20.0",
+		"mongodb": "^7.6.0",
 		"postgres": "^3.4.9",
-		"@valkey/valkey-glide": "^2.4.1",
-		"typescript": "^6"
+		"typescript": "^7.0.2"
 	},
 	"private": true,
 	"type": "module",
