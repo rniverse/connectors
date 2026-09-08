@@ -3,7 +3,7 @@
 Connection wrapper for the official MongoDB Node.js driver. It manages the connection pool lifecycle and health checks.
 
 **Driver:** Official `mongodb` Node.js driver  
-**Peer dep:** `mongodb ^6.20.0`
+**Peer dep:** `mongodb ^7.6.0`
 
 ## Setup
 

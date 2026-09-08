@@ -68,7 +68,9 @@ await admin.deleteTopics({ topics: ['events'] });
 
 ## Publishing (Producer)
 
-Request a producer instance. **You are responsible for disconnecting it** when done (or when shutting down).
+Request a producer instance. When done, call **`rp.disconnect(producer)`** — it
+disconnects the client and removes it from the connector's tracking set (plain
+`producer.disconnect()` also works but leaves a stale reference until `close()`).
 
 ```typescript
 const producer = await rp.getProducer(); // Optionally passing ProducerConfig
@@ -99,12 +101,13 @@ await producer.send({
   ],
 });
 
-await producer.disconnect();
+await rp.disconnect(producer);
 ```
 
 ## Subscribing (Consumer)
 
-Request a consumer instance with a `groupId`. **You are responsible for disconnecting it** when shutting down.
+Request a consumer instance with a `groupId`. Call **`rp.disconnect(consumer)`**
+when shutting down (or rely on `rp.close()`, which disconnects everything tracked).
 
 ### Single Message Processing
 
@@ -126,7 +129,7 @@ await consumer.run({
 });
 
 // Later, on shutdown:
-// await consumer.disconnect();
+// await rp.disconnect(consumer);
 ```
 
 ### Batch Processing (High Throughput)

@@ -1,7 +1,7 @@
 # @rniverse/connectors — Full Reference
 
-Production-ready TypeScript connectors for PostgreSQL (Drizzle ORM), Redis, MongoDB, and Redpanda (Kafka).  
-**Runtime:** Bun ≥ 1.x (uses `bun:SQL` and `bun:RedisClient` native APIs).
+Production-ready TypeScript connectors for PostgreSQL (Drizzle ORM + postgres.js), Redis (valkey-glide), MongoDB, and Redpanda (KafkaJS).  
+**Runtime:** Bun ≥ 1.x.
 
 ## Table of Contents
 
@@ -31,9 +31,12 @@ Peer dependencies — add only what you need:
 ```jsonc
 {
   "@rniverse/utils": "github:rniverse/utils#dist",  // always required (logging)
-  "drizzle-orm": "^0.44.7",   // SQL
-  "kafkajs": "^2.2.4",        // Redpanda
-  "mongodb": "^6.20.0"        // MongoDB
+  "@valkey/valkey-glide": "^2.5.2", // Redis
+  "drizzle-orm": "^0.45.2",         // SQL
+  "kafkajs": "^2.2.4",              // Redpanda
+  "mongodb": "^7.6.0",              // MongoDB
+  "postgres": "^3.4.9",             // SQL
+  "typescript": "^7.0.2"
 }
 ```
 
@@ -54,12 +57,15 @@ await connector.close()    // 3. Tear down
 - `connect()` is **idempotent** — safe to call multiple times.
 - `health()` returns `{ ok: true }` or `{ ok: false, error }` — use for readiness probes.
 - `close()` releases connections and resets state — the instance can be reconnected after.
+- `health()` failures feed a circuit breaker; after `CIRCUIT_THRESHOLD` (default 1)
+  consecutive failures the connector closes itself. `connector.circuit` reports
+  `'closed'` | `'open'` | `'half-open'`; a fresh `connect()` recovers.
 
 ---
 
 ## SQL Connector
 
-**Driver:** `bun:SQL` + Drizzle ORM  
+**Driver:** `postgres` (postgres.js) + Drizzle ORM  
 **Detailed guide:** [sql.md](./sql.md)
 
 ```typescript
@@ -116,7 +122,7 @@ See [sql.md — Drizzle Kit](./sql.md#drizzle-kit-migrations--schema-management)
 
 ## Redis Connector
 
-**Driver:** `bun:RedisClient` (native)  
+**Driver:** `@valkey/valkey-glide`  
 **Detailed guide:** [redis.md](./redis.md)
 
 ```typescript
@@ -125,10 +131,10 @@ import { RedisConnector } from '@rniverse/connectors';
 const redis = new RedisConnector({ url: 'redis://localhost:6379' });
 await redis.connect();
 
-const client = redis.getInstance(); // Bun RedisClient
+const client = redis.getInstance(); // GlideClientAdapter (Redis-style command surface)
 
 // Strings
-await client.set('key', 'value');
+await client.set('key', 'value', { EX: 60 });
 const val = await client.get('key');
 
 // Hashes
@@ -226,7 +232,7 @@ await producer.send({
     { key: 'user-1', value: JSON.stringify({ type: 'signup', ts: Date.now() }) },
   ],
 });
-await producer.disconnect();
+await rp.disconnect(producer);
 
 // Subscribe
 const consumer = await rp.getConsumer({ groupId: 'worker' });
@@ -238,9 +244,9 @@ await consumer.run({
   },
 });
 
-// Cleanup (consumer disconnected manually if running)
-// await consumer.disconnect();
-await rp.close();       // disconnects cached admin client
+// Cleanup
+// await rp.disconnect(consumer);   // or just let rp.close() do it
+await rp.close();       // disconnects cached admin + any tracked producers/consumers
 ```
 
 ### Brokers array config
@@ -263,7 +269,7 @@ Factory functions used internally by the connectors. Useful when you need the ra
 | Function | Returns | Used by |
 |----------|---------|---------|
 | `initMongoDB(config)` | `Promise<{ client: MongoClient, db: Db }>` | `MongoDBConnector` |
-| `initRedis(config)` | `RedisClient` | `RedisConnector` |
+| `initRedis(config)` | `GlideClientConfiguration` | `RedisConnector` |
 | `initORM(config)` | `BunSQLDrizzle` | `SQLConnector` |
 | `initRedpanda(config)` | `Kafka` | `RedpandaConnector` |
 | `closeMongoDB(client)` | `Promise<void>` | `MongoDBConnector.close()` |
@@ -299,17 +305,23 @@ import { initMongoDB, initRedis, initORM, initRedpanda } from '@rniverse/connect
 ### Redis — `RedisConnectorConfig`
 
 ```typescript
+// URL form
+{ url: string } & RedisConnectorOptionsConfig    // 'redis://[user:pass@]host:port' | 'rediss://…'
+
+// Host form
+{ host: string; port: number; useTLS?: boolean;
+  credentials?: { username?: string; password: string } } & RedisConnectorOptionsConfig
+
+// RedisConnectorOptionsConfig
 {
-  url: string;                    // e.g. 'redis://localhost:6379'
-  connectionTimeout?: number;     // ms (default: 10000)
-  idleTimeout?: number;           // ms (default: 30000)
-  autoReconnect?: boolean;        // default: true
-  maxRetries?: number;            // default: 10
-  enableOfflineQueue?: boolean;   // default: true
-  enableAutoPipelining?: boolean; // default: true
-  tls?: boolean | { rejectUnauthorized?: boolean; ca?: string; cert?: string; key?: string };
+  requestTimeout?: number;    // ms, whole request incl. retries (default 10000)
+  connectionTimeout?: number; // ms, establish a connection      (default 10000)
+  tlsInsecure?: boolean;      // skip TLS cert validation         (default false)
+  appName?: string;           // → CLIENT SETNAME  (default INSTANCE_NAME → "connectors")
 }
 ```
+
+`set()` takes an options object: `RedisSetOptions = { EX?, PX?, KEEPTTL?, NX?, XX?, GET? }`.
 
 ### MongoDB — `MongoDBConnectorConfig`
 
@@ -333,22 +345,20 @@ import { initMongoDB, initRedis, initORM, initRedpanda } from '@rniverse/connect
 ### Redpanda — `RedpandaConnectorConfig`
 
 ```typescript
-// URL format
-{ url: string; clientId?: string; connectionTimeout?: number; requestTimeout?: number }
-
-// Brokers format
+// Common (RedpandaConnectorCommonConfig)
 {
-  brokers: string[];
-  clientId?: string;                // default: 'redpanda-connector'
-  connectionTimeout?: number;       // ms (default: 10000)
-  requestTimeout?: number;          // ms (default: 30000)
-  ssl?: boolean | TlsConfig;
-  sasl?: { mechanism: 'plain' | 'scram-sha-256' | 'scram-sha-512'; username: string; password: string };
-  kafka?: Partial<KafkaConfig>;     // KafkaJS overrides
-  producer?: Partial<ProducerConfig>;
-  consumer?: Partial<ConsumerConfig>;
-  admin?: Partial<AdminConfig>;
+  clientId?: string;          // default: appName → INSTANCE_NAME → "connectors"
+  appName?: string;
+  connectionTimeout?: number; // ms (default 10000)
+  requestTimeout?: number;    // ms (default 30000)
+  ssl?: RedpandaTLSConfig;    // boolean | { rejectUnauthorized?, ca?: string[], cert?, key? }
+  sasl?: RedpandaSASLConfig;  // { mechanism: 'plain'|'scram-sha-256'|'scram-sha-512', username, password }
+  kafka?: Partial<KafkaConfig>; // raw KafkaJS overrides, spread last
 }
+
+// then one of:
+{ ...common, brokers: string[] }
+{ ...common, url: string }        // 'host:9092' | 'b1:9092,b2:9092'
 ```
 
 ---
@@ -460,11 +470,8 @@ new SQLConnector({ url: '...', connectionTimeout: 60 });
 
 ### Redis won't reconnect
 
-Check `autoReconnect` and `maxRetries`:
-
-```typescript
-new RedisConnector({ url: '...', autoReconnect: true, maxRetries: 20 });
-```
+Poll `connector.circuit` (`'closed'` | `'open'` | `'half-open'`) and reconnect
+when it isn't `'closed'`. Tune `CIRCUIT_THRESHOLD` / `CIRCUIT_COOLDOWN_MS`.
 
 ### MongoDB server selection timeout
 

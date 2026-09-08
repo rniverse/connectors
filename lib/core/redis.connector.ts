@@ -1,17 +1,39 @@
 // lib/core/redis.connector.ts
 
-import { log, sleep } from '@rniverse/utils';
+import { environment } from '@rniverse/utils/env';
+import { boundedParseInt } from '@rniverse/utils/generic';
+import { log } from '@rniverse/utils/logger';
+import type { Result } from '@rniverse/utils/result';
+import { retry } from '@rniverse/utils/retry';
+import { CircuitBreaker, type CircuitState } from '@tools/circuit-breaker.tool';
 import { initRedis } from '@tools/redis.tool';
 import type { RedisConnectorConfig } from '@type/redis.type';
 import {
 	GlideClient,
 	type GlideClientConfiguration,
 	type PubSubMsg,
+	type SetOptions,
 	TimeUnit,
 } from '@valkey/valkey-glide';
 
+/** Options for {@link GlideClientAdapter.set}, mapped to the driver's native set options. */
+export type RedisSetOptions = {
+	/** Expire the key in N seconds. */
+	EX?: number;
+	/** Expire the key in N milliseconds. */
+	PX?: number;
+	/** Keep the key's existing TTL. */
+	KEEPTTL?: boolean;
+	/** Only set if the key does not already exist. */
+	NX?: boolean;
+	/** Only set if the key already exists. */
+	XX?: boolean;
+	/** Return the previous value instead of `"OK"`. */
+	GET?: boolean;
+};
+
 export class GlideClientAdapter {
-	private subscriptions = new Map<string, any>();
+	private subscriptions = new Map<string, (msg: PubSubMsg) => void>();
 
 	constructor(
 		public readonly glideClient: GlideClient,
@@ -65,24 +87,24 @@ export class GlideClientAdapter {
 	async set(
 		key: string,
 		value: string,
-		...args: any[]
+		options?: RedisSetOptions,
 	): Promise<string | null> {
-		const options: any = {};
-		if (args.length >= 2) {
-			const type = args[0];
-			const countVal = args[1];
-			const count =
-				typeof countVal === 'string' ? parseInt(countVal, 10) : countVal;
-			if (type === 'EX') {
-				options.expiry = { type: TimeUnit.Seconds, count };
-			} else if (type === 'PX') {
-				options.expiry = { type: TimeUnit.Milliseconds, count };
-			}
+		const glide: SetOptions = {};
+		if (options?.EX !== undefined) {
+			glide.expiry = { type: TimeUnit.Seconds, count: options.EX };
+		} else if (options?.PX !== undefined) {
+			glide.expiry = { type: TimeUnit.Milliseconds, count: options.PX };
+		} else if (options?.KEEPTTL) {
+			glide.expiry = 'keepExisting';
 		}
+		if (options?.NX) glide.conditionalSet = 'onlyIfDoesNotExist';
+		else if (options?.XX) glide.conditionalSet = 'onlyIfExists';
+		if (options?.GET) glide.returnOldValue = true;
+
 		const res = await this.glideClient.set(
 			key,
 			value,
-			Object.keys(options).length > 0 ? options : undefined,
+			Object.keys(glide).length > 0 ? glide : undefined,
 		);
 		if (res === null) return null;
 		return typeof res === 'string' ? res : res.toString();
@@ -106,20 +128,12 @@ export class GlideClientAdapter {
 		return await this.glideClient.del(flattenedKeys);
 	}
 
-	async exists(...keys: string[]): Promise<any> {
-		const flattenedKeys: string[] = [];
-		for (const k of keys) {
-			if (Array.isArray(k)) {
-				flattenedKeys.push(...k);
-			} else {
-				flattenedKeys.push(k);
-			}
-		}
+	/** Returns true only if every given key exists. */
+	async exists(...keys: string[]): Promise<boolean> {
+		const flattenedKeys = keys.flat();
+		if (flattenedKeys.length === 0) return false;
 		const count = await this.glideClient.exists(flattenedKeys);
-		if (flattenedKeys.length === 1 && typeof keys[0] === 'string') {
-			return count > 0;
-		}
-		return count;
+		return count === flattenedKeys.length;
 	}
 
 	async expire(key: string, seconds: number): Promise<boolean> {
@@ -174,13 +188,7 @@ export class GlideClientAdapter {
 		field: string,
 		increment: number,
 	): Promise<number> {
-		const res = await this.glideClient.customCommand([
-			'HINCRBY',
-			key,
-			field,
-			increment.toString(),
-		]);
-		return Number(res);
+		return await this.glideClient.hincrBy(key, field, increment);
 	}
 
 	async sadd(key: string, ...members: any[]): Promise<number> {
@@ -228,6 +236,8 @@ export class RedisConnector {
 	private client: GlideClientAdapter | null = null;
 	private config: RedisConnectorConfig;
 	private init_promise: Promise<void> | null = null;
+	private subscribers = new Set<GlideClientAdapter>();
+	private breaker = new CircuitBreaker();
 
 	constructor(config: RedisConnectorConfig) {
 		this.config = config;
@@ -254,9 +264,16 @@ export class RedisConnector {
 			const glideClient = await GlideClient.createClient(clientConfig);
 			this.client = new GlideClientAdapter(glideClient, clientConfig);
 			await this.client.send('PING', []);
+			this.breaker.reset();
 			log.info('Redis connected');
 		} catch (err) {
 			this.init_promise = null;
+			try {
+				this.client?.close();
+			} catch (closeErr) {
+				log.error(closeErr, 'Error closing Redis client after failed connect');
+			}
+			this.client = null;
 			log.error(err, 'Redis connection failed');
 			throw err;
 		}
@@ -268,7 +285,7 @@ export class RedisConnector {
 		return this.client;
 	}
 
-	async ping() {
+	async ping(): Promise<Result<unknown>> {
 		try {
 			const result = await this.require_client().send('PING', []);
 			return { ok: true as const, data: result };
@@ -278,25 +295,64 @@ export class RedisConnector {
 		}
 	}
 
-	async health() {
-		const maxRetries = Number(process.env.MAX_HEALTH_RETRIES ?? 3);
-		let result: any = { ok: false };
-		for (let i = 0; i < maxRetries && !result.ok; i++) {
-			if (i > 0) {
-				log.warn(`Redis health check failed, retrying... (${i}/${maxRetries})`);
-				await sleep(1000 * i);
-			}
-			result = await this.ping();
-		}
-		if (!result.ok) await this.close();
+	async health(): Promise<Result<unknown>> {
+		const attempts = boundedParseInt(environment.get('MAX_HEALTH_RETRIES'), {
+			min: 1,
+			fallback: 3,
+		});
+		const result = await retry(() => this.ping(), {
+			attempts,
+			retryIf: (o) => o.ok && o.value.ok === false,
+			onRetry: (_o, attempt) =>
+				log.warn(
+					`Redis health check failed, retrying... (${attempt}/${attempts})`,
+				),
+		});
+		if (this.breaker.record(result.ok)) await this.close();
 		return result;
+	}
+
+	/** `closed` (healthy) · `open` (down, connection released) · `half-open` (cooldown elapsed, reconnect). */
+	get circuit(): CircuitState {
+		return this.breaker.state;
 	}
 
 	getInstance() {
 		return this.require_client();
 	}
 
+	/**
+	 * Dedicated pub/sub connections. `subscribe()` on the main client is fine
+	 * (glide multiplexes over RESP3), but a separate connection keeps
+	 * subscription traffic isolated from command traffic. Every one `add()`
+	 * hands out is tracked and closed by `close()`.
+	 */
+	readonly subscriber = {
+		add: async (): Promise<GlideClientAdapter> => {
+			const sub = await this.require_client().duplicate();
+			this.subscribers.add(sub);
+			return sub;
+		},
+		release: (sub: GlideClientAdapter): void => {
+			try {
+				sub.close();
+			} catch (error) {
+				log.error(error, 'Error closing Redis subscriber');
+			}
+			this.subscribers.delete(sub);
+		},
+	};
+
 	async close(): Promise<void> {
+		for (const sub of this.subscribers) {
+			try {
+				sub.close();
+			} catch (error) {
+				log.error(error, 'Error closing Redis subscriber');
+			}
+		}
+		this.subscribers.clear();
+
 		if (this.client) {
 			try {
 				this.client.close();

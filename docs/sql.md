@@ -2,8 +2,8 @@
 
 PostgreSQL connector using Bun's native SQL driver with Drizzle ORM for type-safe queries.
 
-**Driver:** `bun:SQL` + `drizzle-orm/bun-sql`  
-**Peer dep:** `drizzle-orm ^0.44.7`
+**Driver:** `postgres` (postgres.js) + `drizzle-orm/postgres-js`  
+**Peer dep:** `drizzle-orm ^0.45.2`
 
 ## Setup
 
@@ -189,8 +189,14 @@ const rows = await orm.$client.unsafe(`SELECT * FROM ${tableName}`);
 ## Close
 
 ```typescript
-await sql.close(); // calls $client.close() (synchronous in Bun SQL), resets state
+await sql.close();                 // SQL_CLOSE_TIMEOUT_S grace (default 5s)
+await sql.close({ timeout: 10 });  // wait up to 10s for in-flight queries
+await sql.close({ timeout: 0 });   // force-close immediately
 ```
+
+`timeout` is the seconds postgres.js waits for in-flight queries before
+force-closing the pool. (Mongo/Redis/Redpanda `close()` take no options — their
+drivers don't expose a close timeout.)
 
 ---
 
@@ -342,6 +348,6 @@ DATABASE_URL=postgres://user:pass@localhost:5432/mydb bun run db:migrate --confi
 | `connect()` | `Promise<void>` |
 | `health()` / `ping()` | `{ ok }` or `{ ok, error }` |
 | `getInstance()` | `BunSQLDrizzle` (Drizzle ORM instance) |
-| `close()` | `Promise<void>` |
+| `close(options?)` | `Promise<void>` — `{ timeout?: number }` in seconds |
 
 All query operations go through `getInstance()` — the connector manages the connection lifecycle, Drizzle manages queries.

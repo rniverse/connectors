@@ -2,7 +2,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { MongoDBConnector } from '@core/mongodb.connector';
-import { log } from '@rniverse/utils';
+import { log } from '@rniverse/utils/logger';
 import type { Db } from 'mongodb';
 
 interface User {
