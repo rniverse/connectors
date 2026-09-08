@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SQLConnector } from '@core/sql.connector';
+import { SQLConnector } from '../core/sql.connector.js';
 import { log } from '@rniverse/utils';
 import { sql } from 'drizzle-orm';
 describe('SQL Tool Tests', () => {

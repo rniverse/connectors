@@ -1,11 +1,13 @@
 // lib/tools/drizzle.tool.ts
 // ref: https://github.com/porsager/postgres#connection-options
-import { log } from '@rniverse/utils';
+import { environment } from '@rniverse/utils/env';
+import { log } from '@rniverse/utils/logger';
 import { drizzle as createORM } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 // Maps our camelCase config keys to postgres.js's snake_case option names
 function toPostgresOptions(options) {
-    const { idleTimeout, connectionTimeout, maxLifetime, ...rest } = options;
+    const { idleTimeout, connectionTimeout, maxLifetime, appName, ...rest } = options;
+    const application_name = appName ?? environment.get('INSTANCE_NAME', 'connectors');
     return {
         ...rest,
         ...(idleTimeout !== undefined && { idle_timeout: idleTimeout }),
@@ -13,6 +15,10 @@ function toPostgresOptions(options) {
             connect_timeout: connectionTimeout,
         }),
         ...(maxLifetime !== undefined && { max_lifetime: maxLifetime }),
+        connection: {
+            ...rest.connection,
+            application_name,
+        },
     };
 }
 export function initORM(connection) {

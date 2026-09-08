@@ -1,9 +1,9 @@
 // lib/tools/redis.tool.ts
+import { environment } from '@rniverse/utils/env';
+const DEFAULT_PORT = 6379;
+const DEFAULT_TIMEOUT_MS = 10000;
 export function parseRedisUrl(urlStr) {
     const parsed = new URL(urlStr);
-    const host = parsed.hostname || 'localhost';
-    const port = parsed.port ? parseInt(parsed.port, 10) : 6379;
-    const useTLS = parsed.protocol === 'rediss:';
     const credentials = parsed.password
         ? {
             password: decodeURIComponent(parsed.password),
@@ -13,36 +13,41 @@ export function parseRedisUrl(urlStr) {
         }
         : undefined;
     return {
-        host,
-        port,
-        useTLS,
+        host: parsed.hostname || 'localhost',
+        port: parsed.port ? Number.parseInt(parsed.port, 10) : DEFAULT_PORT,
+        useTLS: parsed.protocol === 'rediss:',
         credentials,
     };
 }
-export function initRedis(connection) {
-    const { url, ...rest } = connection;
-    // Default connection options
-    const defaults = {
-        connectionTimeout: 10000, // 10 seconds in milliseconds
-        idleTimeout: 30000, // 30 seconds in milliseconds
-        autoReconnect: true,
-        maxRetries: 10,
-        enableOfflineQueue: true,
-        enableAutoPipelining: true,
+function resolveConnection(connection) {
+    if ('url' in connection) {
+        return parseRedisUrl(connection.url);
+    }
+    return {
+        host: connection.host,
+        port: connection.port,
+        useTLS: connection.useTLS ?? false,
+        credentials: connection.credentials,
     };
-    const options = { ...defaults, ...rest };
-    const parsed = parseRedisUrl(url);
+}
+export function initRedis(connection) {
+    const { host, port, useTLS, credentials } = resolveConnection(connection);
     const config = {
-        addresses: [{ host: parsed.host, port: parsed.port }],
-        useTLS: parsed.useTLS || !!options.tls,
-        requestTimeout: options.connectionTimeout ?? 10000,
+        addresses: [{ host, port }],
+        useTLS,
+        requestTimeout: connection.requestTimeout ?? DEFAULT_TIMEOUT_MS,
         advancedConfiguration: {
-            connectionTimeout: options.connectionTimeout ?? 10000,
+            connectionTimeout: connection.connectionTimeout ?? DEFAULT_TIMEOUT_MS,
+            ...(connection.tlsInsecure
+                ? { tlsAdvancedConfiguration: { insecure: true } }
+                : {}),
         },
     };
-    if (parsed.credentials) {
-        config.credentials = parsed.credentials;
+    if (credentials) {
+        config.credentials = credentials;
     }
+    config.clientName =
+        connection.appName ?? environment.get('INSTANCE_NAME', 'connectors');
     return config;
 }
 //# sourceMappingURL=redis.tool.js.map

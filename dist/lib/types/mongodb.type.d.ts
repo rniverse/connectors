@@ -1,6 +1,7 @@
 export type MongoDBConnectorConfig = {
     url: string;
     database?: string;
+    appName?: string;
     options?: {
         maxPoolSize?: number;
         minPoolSize?: number;

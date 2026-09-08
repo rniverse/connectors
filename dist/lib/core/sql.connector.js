@@ -1,10 +1,15 @@
 // lib/core/sql.connector.ts
-import { log, sleep } from '@rniverse/utils';
-import { initORM } from '@tools';
+import { environment } from '@rniverse/utils/env';
+import { boundedParseInt } from '@rniverse/utils/generic';
+import { log } from '@rniverse/utils/logger';
+import { retry } from '@rniverse/utils/retry';
+import { CircuitBreaker } from '../tools/circuit-breaker.tool.js';
+import { initORM } from '../tools/drizzle.tool.js';
 export class SQLConnector {
     client = null;
     config;
     init_promise = null;
+    breaker = new CircuitBreaker();
     constructor(config) {
         this.config = config;
     }
@@ -20,14 +25,22 @@ export class SQLConnector {
         return this.init_promise;
     }
     async __connect() {
+        const client = initORM(this.config);
         try {
-            const client = initORM(this.config);
             await client.$client `SELECT 1`;
             this.client = client;
+            this.breaker.reset();
             log.info('SQL connected');
         }
         catch (err) {
             this.init_promise = null; // allow retry on failure
+            // The pool was created before the reachability check; close it so we
+            // don't leak connections / a reconnect timer on failure.
+            await client.$client
+                .end({ timeout: this.closeTimeout() })
+                .catch((endErr) => {
+                log.error(endErr, 'Error closing SQL pool after failed connect');
+            });
             log.error(err, 'SQL connection failed');
             throw err;
         }
@@ -36,6 +49,18 @@ export class SQLConnector {
         if (!this.client)
             throw new Error('SQL not connected — call connect() first');
         return this.client;
+    }
+    /**
+     * Grace period, in seconds, that postgres.js `end()` waits for in-flight
+     * queries to finish before force-closing connections. Explicit value wins,
+     * else `SQL_CLOSE_TIMEOUT_S`, else 5. `0` = force-close immediately.
+     */
+    closeTimeout(explicit) {
+        return (explicit ??
+            boundedParseInt(environment.get('SQL_CLOSE_TIMEOUT_S'), {
+                min: 0,
+                fallback: 5,
+            }));
     }
     async ping() {
         try {
@@ -48,25 +73,38 @@ export class SQLConnector {
         }
     }
     async health() {
-        const maxRetries = Number(process.env.MAX_HEALTH_RETRIES ?? 3);
-        let result = { ok: false };
-        for (let i = 0; i < maxRetries && !result.ok; i++) {
-            if (i > 0) {
-                log.warn(`SQL health check failed, retrying... (${i}/${maxRetries})`);
-                await sleep(1000 * i);
-            }
-            result = await this.ping();
-        }
-        if (!result.ok)
+        const attempts = boundedParseInt(environment.get('MAX_HEALTH_RETRIES'), {
+            min: 1,
+            fallback: 3,
+        });
+        const result = await retry(() => this.ping(), {
+            attempts,
+            retryIf: (o) => o.ok && o.value.ok === false,
+            onRetry: (_o, attempt) => log.warn(`SQL health check failed, retrying... (${attempt}/${attempts})`),
+        });
+        // Only tear the pool down once the breaker actually trips; a single bad
+        // check with CIRCUIT_THRESHOLD > 1 leaves the connection up to retry.
+        if (this.breaker.record(result.ok))
             await this.close();
         return result;
+    }
+    /** `closed` (healthy) · `open` (down, connection released) · `half-open` (cooldown elapsed, reconnect). */
+    get circuit() {
+        return this.breaker.state;
     }
     getInstance() {
         return this.require_client();
     }
-    async close() {
+    /**
+     * @param options.timeout seconds to wait for in-flight queries before
+     * force-closing. Omit to use `SQL_CLOSE_TIMEOUT_S` (default 5); `0` closes
+     * immediately.
+     */
+    async close(options = {}) {
         if (this.client) {
-            this.client.$client.end().catch((err) => {
+            await this.client.$client
+                .end({ timeout: this.closeTimeout(options.timeout) })
+                .catch((err) => {
                 log.error(err, 'Error closing SQL connection');
             });
         }

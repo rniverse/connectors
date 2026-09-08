@@ -1,5 +1,6 @@
 // lib/tools/mongodb.tool.ts
-import { log } from '@rniverse/utils';
+import { environment } from '@rniverse/utils/env';
+import { log } from '@rniverse/utils/logger';
 import { MongoClient } from 'mongodb';
 const defaultOptions = {
     maxPoolSize: 10,
@@ -12,16 +13,17 @@ const defaultOptions = {
 };
 export async function initMongoDB(config) {
     log.info('Initializing MongoDB client...');
+    let mongoClient = null;
     try {
-        const options = { ...defaultOptions, ...config.options };
-        const mongoClient = new MongoClient(config.url, options);
+        const appName = config.appName ??
+            config.options?.appName ??
+            environment.get('INSTANCE_NAME', 'connectors');
+        const options = { ...defaultOptions, ...config.options, appName };
+        mongoClient = new MongoClient(config.url, options);
         await mongoClient.connect();
-        // Extract database name from URL or use provided database name
-        const dbName = config.database || extractDatabaseFromUrl(config.url);
-        if (!dbName) {
-            throw new Error('Database name not found in URL or config');
-        }
-        const database = mongoClient.db(dbName);
+        // Use the configured database, or fall back to the one in the connection
+        // string (mongoClient.db(undefined) resolves it, else defaults to 'test').
+        const database = mongoClient.db(config.database);
         // Test connection
         await database.admin().ping();
         log.info('MongoDB warm-up successful');
@@ -29,17 +31,10 @@ export async function initMongoDB(config) {
     }
     catch (error) {
         log.error(error, 'Failed to initialize MongoDB');
+        await mongoClient?.close().catch((closeError) => {
+            log.error(closeError, 'Failed to close MongoDB client after initialization failure');
+        });
         throw error;
-    }
-}
-function extractDatabaseFromUrl(url) {
-    try {
-        // Extract database name from mongodb://host:port/database or mongodb+srv://host/database
-        const match = url.match(/\/([^/?]+)(\?|$)/);
-        return match?.[1] ?? null;
-    }
-    catch {
-        return null;
     }
 }
 export async function closeMongoDB(client) {

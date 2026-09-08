@@ -1,6 +1,6 @@
 // lib/test/mongodb.test.ts
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { MongoDBConnector } from '@core/mongodb.connector';
+import { MongoDBConnector } from '../core/mongodb.connector.js';
 import { log } from '@rniverse/utils';
 describe('MongoDB Connector Tests', () => {
     let connector;

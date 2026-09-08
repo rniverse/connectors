@@ -1,6 +1,6 @@
 // lib/test/redis-comprehensive.test.ts
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { RedisConnector } from '@core/redis.connector';
+import { RedisConnector } from '../core/redis.connector.js';
 describe('Redis Comprehensive Tests', () => {
     let connector;
     const testPrefix = `test:${Date.now()}`;

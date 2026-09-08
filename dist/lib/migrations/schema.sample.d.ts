@@ -122,6 +122,6 @@ export declare const users: import("drizzle-orm/pg-core").PgTableWithColumns<{
             generated: undefined;
         }, {}, {}>;
     };
-    dialect: "pg";
+    dialect: 'pg';
 }>;
 //# sourceMappingURL=schema.sample.d.ts.map

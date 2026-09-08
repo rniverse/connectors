@@ -1,20 +1,20 @@
 export type RedisConnectorOptionsConfig = {
+    requestTimeout?: number;
     connectionTimeout?: number;
-    idleTimeout?: number;
-    autoReconnect?: boolean;
-    maxRetries?: number;
-    enableOfflineQueue?: boolean;
-    enableAutoPipelining?: boolean;
-    tls?: boolean | {
-        rejectUnauthorized?: boolean;
-        ca?: string;
-        cert?: string;
-        key?: string;
-    };
-    [key: string]: any;
+    tlsInsecure?: boolean;
+    appName?: string;
 };
-export type RedisConnectorURLConfig = {
+export type RedisConnectionURLConfig = {
     url: string;
 } & RedisConnectorOptionsConfig;
-export type RedisConnectorConfig = RedisConnectorURLConfig;
+export type RedisConnectionConfig = {
+    host: string;
+    port: number;
+    useTLS?: boolean;
+    credentials?: {
+        username?: string;
+        password: string;
+    };
+} & RedisConnectorOptionsConfig;
+export type RedisConnectorConfig = RedisConnectionURLConfig | RedisConnectionConfig;
 //# sourceMappingURL=redis.type.d.ts.map

@@ -1,5 +1,7 @@
-import type { RedpandaConnectorConfig, RedpandaConnectorURLConfig } from '@type/redpanda.type';
-import type { Admin, ConsumerConfig, ProducerConfig } from 'kafkajs';
+import type { Result } from '@rniverse/utils/result';
+import { type CircuitState } from '../tools/circuit-breaker.tool.js';
+import type { RedpandaConnectorConfig, RedpandaConnectorURLConfig } from '../types/redpanda.type.js';
+import type { Admin, Consumer, ConsumerConfig, Producer, ProducerConfig } from 'kafkajs';
 export declare class RedpandaConnector {
     private kafka;
     private adminClient;
@@ -7,6 +9,7 @@ export declare class RedpandaConnector {
     private config;
     private consumers;
     private producers;
+    private breaker;
     constructor(config: RedpandaConnectorConfig | RedpandaConnectorURLConfig);
     /**
      * Verify connectivity by performing an admin listTopics call.
@@ -20,22 +23,23 @@ export declare class RedpandaConnector {
     private __connect_admin;
     /**
      * Create and connect a new Producer.
-     * Caller is responsible for calling producer.disconnect() when done.
+     * Call `connector.disconnect(producer)` when done so it is also untracked.
      */
     getProducer(config?: Partial<ProducerConfig>): Promise<ReturnType<typeof this.kafka.producer>>;
     /**
      * Create and connect a new Consumer.
-     * Caller is responsible for calling consumer.disconnect() when done.
+     * Call `connector.disconnect(consumer)` when done so it is also untracked.
      */
     getConsumer(config: ConsumerConfig): Promise<ReturnType<typeof this.kafka.consumer>>;
-    ping(): Promise<{
-        ok: true;
-        error?: undefined;
-    } | {
-        ok: false;
-        error: unknown;
-    }>;
-    health(): Promise<any>;
+    /**
+     * Disconnect a producer or consumer created by this connector and stop
+     * tracking it, so `close()` won't try to disconnect it again.
+     */
+    disconnect(client: Producer | Consumer): Promise<void>;
+    ping(): Promise<Result<void>>;
+    health(): Promise<Result<void>>;
+    /** `closed` (healthy) · `open` (down, connections released) · `half-open` (cooldown elapsed, reconnect). */
+    get circuit(): CircuitState;
     getInstance(): import("kafkajs").Kafka;
     close(): Promise<void>;
 }

@@ -2,10 +2,10 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SQLConnector } from '@core/sql.connector';
+import { SQLConnector } from '../core/sql.connector.js';
 import { log } from '@rniverse/utils';
 import { and, avg, count, desc, eq, gt, sql, sum } from 'drizzle-orm';
-import { orders, products, users } from './data/schema.drizzle';
+import { orders, products, users } from './data/schema.drizzle.js';
 describe('SQL Drizzle ORM Tests', () => {
     let connector;
     beforeAll(async () => {

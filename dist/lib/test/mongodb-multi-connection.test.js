@@ -1,7 +1,7 @@
 // lib/test/mongodb-multi-connection.test.ts
 // Test to verify multiple MongoDB connections work correctly (no singleton)
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { MongoDBConnector } from '@core/mongodb.connector';
+import { MongoDBConnector } from '../core/mongodb.connector.js';
 import { env } from 'bun';
 describe('MongoDB Multi-Connection Tests', () => {
     let connector1;

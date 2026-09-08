@@ -1,26 +1,28 @@
 import type { KafkaConfig } from 'kafkajs';
-export type RedpandaConnectorConfig = {
-    brokers: string[];
+export type RedpandaTLSConfig = boolean | {
+    rejectUnauthorized?: boolean;
+    ca?: string[];
+    cert?: string;
+    key?: string;
+};
+export type RedpandaSASLConfig = {
+    mechanism: 'plain' | 'scram-sha-256' | 'scram-sha-512';
+    username: string;
+    password: string;
+};
+export type RedpandaConnectorCommonConfig = {
     clientId?: string;
+    appName?: string;
     connectionTimeout?: number;
     requestTimeout?: number;
-    ssl?: boolean | {
-        rejectUnauthorized?: boolean;
-        ca?: string[];
-        cert?: string;
-        key?: string;
-    };
-    sasl?: {
-        mechanism: 'plain' | 'scram-sha-256' | 'scram-sha-512';
-        username: string;
-        password: string;
-    };
+    ssl?: RedpandaTLSConfig;
+    sasl?: RedpandaSASLConfig;
     kafka?: Partial<KafkaConfig>;
 };
-export type RedpandaConnectorURLConfig = {
+export type RedpandaConnectorConfig = RedpandaConnectorCommonConfig & {
+    brokers: string[];
+};
+export type RedpandaConnectorURLConfig = RedpandaConnectorCommonConfig & {
     url: string;
-    clientId?: string;
-    connectionTimeout?: number;
-    requestTimeout?: number;
 };
 //# sourceMappingURL=redpanda.type.d.ts.map

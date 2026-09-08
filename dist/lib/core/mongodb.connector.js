@@ -1,11 +1,16 @@
 // lib/core/mongodb.connector.ts
-import { log, sleep } from '@rniverse/utils';
-import { initMongoDB } from '@tools/mongodb.tool';
+import { environment } from '@rniverse/utils/env';
+import { boundedParseInt } from '@rniverse/utils/generic';
+import { log } from '@rniverse/utils/logger';
+import { retry } from '@rniverse/utils/retry';
+import { CircuitBreaker } from '../tools/circuit-breaker.tool.js';
+import { initMongoDB } from '../tools/mongodb.tool.js';
 export class MongoDBConnector {
     db = null;
     client = null;
     config;
     init_promise = null;
+    breaker = new CircuitBreaker();
     constructor(config) {
         this.config = config;
     }
@@ -24,6 +29,7 @@ export class MongoDBConnector {
             const { client, db } = await initMongoDB(this.config);
             this.client = client;
             this.db = db;
+            this.breaker.reset();
             return db;
         }
         catch (error) {
@@ -54,18 +60,22 @@ export class MongoDBConnector {
         }
     }
     async health() {
-        const maxRetries = Number(process.env.MAX_HEALTH_RETRIES ?? 3);
-        let result = { ok: false };
-        for (let i = 0; i < maxRetries && !result.ok; i++) {
-            if (i > 0) {
-                log.warn(`MongoDB health check failed, retrying... (${i}/${maxRetries})`);
-                await sleep(1000 * i);
-            }
-            result = await this.ping();
-        }
-        if (!result.ok)
+        const attempts = boundedParseInt(environment.get('MAX_HEALTH_RETRIES'), {
+            min: 1,
+            fallback: 3,
+        });
+        const result = await retry(() => this.ping(), {
+            attempts,
+            retryIf: (o) => o.ok && o.value.ok === false,
+            onRetry: (_o, attempt) => log.warn(`MongoDB health check failed, retrying... (${attempt}/${attempts})`),
+        });
+        if (this.breaker.record(result.ok))
             await this.close();
         return result;
+    }
+    /** `closed` (healthy) · `open` (down, connection released) · `half-open` (cooldown elapsed, reconnect). */
+    get circuit() {
+        return this.breaker.state;
     }
     getClientInstance() {
         return this.require_client();

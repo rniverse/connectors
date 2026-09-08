@@ -1,6 +1,6 @@
 // lib/test/redpanda.test.ts
 import { afterAll, describe, expect, test } from 'bun:test';
-import { RedpandaConnector } from '@core/redpanda.connector';
+import { RedpandaConnector } from '../core/redpanda.connector.js';
 import { log } from '@rniverse/utils';
 const REDPANDA_URL = process.env.REDPANDA_URL || 'localhost:9092';
 describe('Redpanda Connector Tests', () => {

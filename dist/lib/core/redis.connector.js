@@ -1,6 +1,10 @@
 // lib/core/redis.connector.ts
-import { log, sleep } from '@rniverse/utils';
-import { initRedis } from '@tools/redis.tool';
+import { environment } from '@rniverse/utils/env';
+import { boundedParseInt } from '@rniverse/utils/generic';
+import { log } from '@rniverse/utils/logger';
+import { retry } from '@rniverse/utils/retry';
+import { CircuitBreaker } from '../tools/circuit-breaker.tool.js';
+import { initRedis } from '../tools/redis.tool.js';
 import { GlideClient, TimeUnit, } from '@valkey/valkey-glide';
 export class GlideClientAdapter {
     glideClient;
@@ -45,20 +49,24 @@ export class GlideClientAdapter {
             this.subscriptions.delete(channel);
         }
     }
-    async set(key, value, ...args) {
-        const options = {};
-        if (args.length >= 2) {
-            const type = args[0];
-            const countVal = args[1];
-            const count = typeof countVal === 'string' ? parseInt(countVal, 10) : countVal;
-            if (type === 'EX') {
-                options.expiry = { type: TimeUnit.Seconds, count };
-            }
-            else if (type === 'PX') {
-                options.expiry = { type: TimeUnit.Milliseconds, count };
-            }
+    async set(key, value, options) {
+        const glide = {};
+        if (options?.EX !== undefined) {
+            glide.expiry = { type: TimeUnit.Seconds, count: options.EX };
         }
-        const res = await this.glideClient.set(key, value, Object.keys(options).length > 0 ? options : undefined);
+        else if (options?.PX !== undefined) {
+            glide.expiry = { type: TimeUnit.Milliseconds, count: options.PX };
+        }
+        else if (options?.KEEPTTL) {
+            glide.expiry = 'keepExisting';
+        }
+        if (options?.NX)
+            glide.conditionalSet = 'onlyIfDoesNotExist';
+        else if (options?.XX)
+            glide.conditionalSet = 'onlyIfExists';
+        if (options?.GET)
+            glide.returnOldValue = true;
+        const res = await this.glideClient.set(key, value, Object.keys(glide).length > 0 ? glide : undefined);
         if (res === null)
             return null;
         return typeof res === 'string' ? res : res.toString();
@@ -81,21 +89,13 @@ export class GlideClientAdapter {
         }
         return await this.glideClient.del(flattenedKeys);
     }
+    /** Returns true only if every given key exists. */
     async exists(...keys) {
-        const flattenedKeys = [];
-        for (const k of keys) {
-            if (Array.isArray(k)) {
-                flattenedKeys.push(...k);
-            }
-            else {
-                flattenedKeys.push(k);
-            }
-        }
+        const flattenedKeys = keys.flat();
+        if (flattenedKeys.length === 0)
+            return false;
         const count = await this.glideClient.exists(flattenedKeys);
-        if (flattenedKeys.length === 1 && typeof keys[0] === 'string') {
-            return count > 0;
-        }
-        return count;
+        return count === flattenedKeys.length;
     }
     async expire(key, seconds) {
         return await this.glideClient.expire(key, seconds);
@@ -139,13 +139,7 @@ export class GlideClientAdapter {
         });
     }
     async hincrby(key, field, increment) {
-        const res = await this.glideClient.customCommand([
-            'HINCRBY',
-            key,
-            field,
-            increment.toString(),
-        ]);
-        return Number(res);
+        return await this.glideClient.hincrBy(key, field, increment);
     }
     async sadd(key, ...members) {
         const flattened = [];
@@ -185,6 +179,8 @@ export class RedisConnector {
     client = null;
     config;
     init_promise = null;
+    subscribers = new Set();
+    breaker = new CircuitBreaker();
     constructor(config) {
         this.config = config;
     }
@@ -208,10 +204,18 @@ export class RedisConnector {
             const glideClient = await GlideClient.createClient(clientConfig);
             this.client = new GlideClientAdapter(glideClient, clientConfig);
             await this.client.send('PING', []);
+            this.breaker.reset();
             log.info('Redis connected');
         }
         catch (err) {
             this.init_promise = null;
+            try {
+                this.client?.close();
+            }
+            catch (closeErr) {
+                log.error(closeErr, 'Error closing Redis client after failed connect');
+            }
+            this.client = null;
             log.error(err, 'Redis connection failed');
             throw err;
         }
@@ -232,23 +236,58 @@ export class RedisConnector {
         }
     }
     async health() {
-        const maxRetries = Number(process.env.MAX_HEALTH_RETRIES ?? 3);
-        let result = { ok: false };
-        for (let i = 0; i < maxRetries && !result.ok; i++) {
-            if (i > 0) {
-                log.warn(`Redis health check failed, retrying... (${i}/${maxRetries})`);
-                await sleep(1000 * i);
-            }
-            result = await this.ping();
-        }
-        if (!result.ok)
+        const attempts = boundedParseInt(environment.get('MAX_HEALTH_RETRIES'), {
+            min: 1,
+            fallback: 3,
+        });
+        const result = await retry(() => this.ping(), {
+            attempts,
+            retryIf: (o) => o.ok && o.value.ok === false,
+            onRetry: (_o, attempt) => log.warn(`Redis health check failed, retrying... (${attempt}/${attempts})`),
+        });
+        if (this.breaker.record(result.ok))
             await this.close();
         return result;
+    }
+    /** `closed` (healthy) · `open` (down, connection released) · `half-open` (cooldown elapsed, reconnect). */
+    get circuit() {
+        return this.breaker.state;
     }
     getInstance() {
         return this.require_client();
     }
+    /**
+     * Dedicated pub/sub connections. `subscribe()` on the main client is fine
+     * (glide multiplexes over RESP3), but a separate connection keeps
+     * subscription traffic isolated from command traffic. Every one `add()`
+     * hands out is tracked and closed by `close()`.
+     */
+    subscriber = {
+        add: async () => {
+            const sub = await this.require_client().duplicate();
+            this.subscribers.add(sub);
+            return sub;
+        },
+        release: (sub) => {
+            try {
+                sub.close();
+            }
+            catch (error) {
+                log.error(error, 'Error closing Redis subscriber');
+            }
+            this.subscribers.delete(sub);
+        },
+    };
     async close() {
+        for (const sub of this.subscribers) {
+            try {
+                sub.close();
+            }
+            catch (error) {
+                log.error(error, 'Error closing Redis subscriber');
+            }
+        }
+        this.subscribers.clear();
         if (this.client) {
             try {
                 this.client.close();

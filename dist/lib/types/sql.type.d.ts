@@ -4,7 +4,8 @@ export type SQLConnectorOptionsConfig = {
     connectionTimeout: number;
     maxLifetime: number;
     prepare: boolean;
-    [key: string]: any;
+    appName: string;
+    connection: Record<string, string | number | boolean>;
 };
 export type SQLConnectorURLConfig = {
     url: string;

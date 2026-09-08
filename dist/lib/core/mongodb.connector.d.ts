@@ -1,10 +1,13 @@
+import type { Result } from '@rniverse/utils/result';
+import { type CircuitState } from '../tools/circuit-breaker.tool.js';
 import type { Db, MongoClient } from 'mongodb';
-import type { MongoDBConnectorConfig } from '../types/mongodb.type';
+import type { MongoDBConnectorConfig } from '../types/mongodb.type.js';
 export declare class MongoDBConnector {
     private db;
     private client;
     private config;
     private init_promise;
+    private breaker;
     constructor(config: MongoDBConnectorConfig);
     /**
      * Connect to MongoDB. Safe to call multiple times — subsequent calls
@@ -14,16 +17,10 @@ export declare class MongoDBConnector {
     private __connect;
     private require_db;
     private require_client;
-    ping(): Promise<{
-        ok: true;
-        data: import("bson").Document;
-        error?: undefined;
-    } | {
-        ok: false;
-        error: unknown;
-        data?: undefined;
-    }>;
-    health(): Promise<any>;
+    ping(): Promise<Result<Record<string, unknown>>>;
+    health(): Promise<Result<Record<string, unknown>>>;
+    /** `closed` (healthy) · `open` (down, connection released) · `half-open` (cooldown elapsed, reconnect). */
+    get circuit(): CircuitState;
     getClientInstance(): MongoClient;
     getInstance(): Db;
     getDB(name: string): Db;

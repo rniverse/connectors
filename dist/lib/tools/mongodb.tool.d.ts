@@ -1,5 +1,5 @@
 import { MongoClient } from 'mongodb';
-import type { MongoDBConnectorConfig } from '../types/mongodb.type';
+import type { MongoDBConnectorConfig } from '../types/mongodb.type.js';
 export declare function initMongoDB(config: MongoDBConnectorConfig): Promise<{
     client: MongoClient;
     db: import("mongodb").Db;
