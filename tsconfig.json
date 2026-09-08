@@ -25,17 +25,16 @@
 		"noUnusedLocals": false,
 		"noUnusedParameters": false,
 		"noPropertyAccessFromIndexSignature": false,
-		"baseUrl": ".",
-		"ignoreDeprecations": "6.0",
 		"paths": {
-			"@tools": ["lib/tools"],
-			"@tools/*": ["lib/tools/*"],
-			"@type": ["lib/types"],
-			"@type/*": ["lib/types/*"],
-			"@core": ["lib/core"],
-			"@core/*": ["lib/core/*"],
-			"@migrations": ["lib/migrations"],
-			"@migrations/*": ["lib/migrations/*"]
+			"@tools": ["./lib/tools/index.ts"],
+			"@tools/*": ["./lib/tools/*"],
+			"@type": ["./lib/types"],
+			"@type/*": ["./lib/types/*"],
+			"@core": ["./lib/core"],
+			"@core/*": ["./lib/core/*"],
+			"@migrations": ["./lib/migrations"],
+			"@migrations/*": ["./lib/migrations/*"],
+			"lib/*": ["./lib/*"]
 		}
 	}
 }

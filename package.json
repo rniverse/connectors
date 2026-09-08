@@ -4,10 +4,28 @@
 	"module": "index.ts",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
+	"files": ["dist"],
+	"exports": {
+		".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+		"./sql": { "types": "./dist/lib/sql.d.ts", "default": "./dist/lib/sql.js" },
+		"./mongodb": {
+			"types": "./dist/lib/mongodb.d.ts",
+			"default": "./dist/lib/mongodb.js"
+		},
+		"./redis": {
+			"types": "./dist/lib/redis.d.ts",
+			"default": "./dist/lib/redis.js"
+		},
+		"./redpanda": {
+			"types": "./dist/lib/redpanda.d.ts",
+			"default": "./dist/lib/redpanda.js"
+		},
+		"./package.json": "./package.json"
+	},
 	"scripts": {
 		"lint": "biome check --write",
 		"test": "bun test",
-		"build": "bun run tsc --project tsconfig.build.json",
+		"build": "bun run tsc --project tsconfig.build.json && bun run tsc-alias --project tsconfig.build.json",
 		"biome": "biome",
 		"db:generate": "drizzle-kit generate",
 		"db:migrate": "drizzle-kit migrate",
@@ -18,7 +36,8 @@
 	"devDependencies": {
 		"@biomejs/biome": "^2.5.12",
 		"@types/bun": "^1.4.0",
-		"drizzle-kit": "^0.31.10"
+		"drizzle-kit": "^0.31.10",
+		"tsc-alias": "^1.9.4"
 	},
 	"peerDependencies": {
 		"@rniverse/utils": "github:rniverse/utils#dist",

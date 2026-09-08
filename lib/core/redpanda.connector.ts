@@ -1,12 +1,23 @@
 // lib/core/redpanda.connector.ts
 
-import { log, sleep } from '@rniverse/utils';
+import { environment } from '@rniverse/utils/env';
+import { boundedParseInt } from '@rniverse/utils/generic';
+import { log } from '@rniverse/utils/logger';
+import type { Result } from '@rniverse/utils/result';
+import { retry } from '@rniverse/utils/retry';
+import { CircuitBreaker, type CircuitState } from '@tools/circuit-breaker.tool';
 import { initRedpanda } from '@tools/redpanda.tool';
 import type {
 	RedpandaConnectorConfig,
 	RedpandaConnectorURLConfig,
 } from '@type/redpanda.type';
-import type { Admin, ConsumerConfig, ProducerConfig } from 'kafkajs';
+import type {
+	Admin,
+	Consumer,
+	ConsumerConfig,
+	Producer,
+	ProducerConfig,
+} from 'kafkajs';
 import { Partitioners } from 'kafkajs';
 
 export class RedpandaConnector {
@@ -16,6 +27,7 @@ export class RedpandaConnector {
 	private config: RedpandaConnectorConfig | RedpandaConnectorURLConfig;
 	private consumers = new Set<ReturnType<typeof this.kafka.consumer>>();
 	private producers = new Set<ReturnType<typeof this.kafka.producer>>();
+	private breaker = new CircuitBreaker();
 
 	constructor(config: RedpandaConnectorConfig | RedpandaConnectorURLConfig) {
 		this.config = config;
@@ -29,6 +41,7 @@ export class RedpandaConnector {
 	async connect(): Promise<Admin> {
 		const admin = await this.getAdmin();
 		await admin.listTopics();
+		this.breaker.reset();
 		log.info('Redpanda connected');
 		return admin;
 	}
@@ -57,7 +70,7 @@ export class RedpandaConnector {
 
 	/**
 	 * Create and connect a new Producer.
-	 * Caller is responsible for calling producer.disconnect() when done.
+	 * Call `connector.disconnect(producer)` when done so it is also untracked.
 	 */
 	async getProducer(
 		config?: Partial<ProducerConfig>,
@@ -74,7 +87,7 @@ export class RedpandaConnector {
 
 	/**
 	 * Create and connect a new Consumer.
-	 * Caller is responsible for calling consumer.disconnect() when done.
+	 * Call `connector.disconnect(consumer)` when done so it is also untracked.
 	 */
 	async getConsumer(
 		config: ConsumerConfig,
@@ -86,7 +99,19 @@ export class RedpandaConnector {
 		return consumer;
 	}
 
-	async ping() {
+	/**
+	 * Disconnect a producer or consumer created by this connector and stop
+	 * tracking it, so `close()` won't try to disconnect it again.
+	 */
+	async disconnect(client: Producer | Consumer): Promise<void> {
+		await client.disconnect().catch((err) => {
+			log.error(err, 'Error disconnecting Redpanda client');
+		});
+		this.producers.delete(client as Producer);
+		this.consumers.delete(client as Consumer);
+	}
+
+	async ping(): Promise<Result<void>> {
 		try {
 			const admin = await this.getAdmin();
 			await admin.listTopics();
@@ -97,20 +122,26 @@ export class RedpandaConnector {
 		}
 	}
 
-	async health() {
-		const maxRetries = Number(process.env.MAX_HEALTH_RETRIES ?? 3);
-		let result: any = { ok: false };
-		for (let i = 0; i < maxRetries && !result.ok; i++) {
-			if (i > 0) {
+	async health(): Promise<Result<void>> {
+		const attempts = boundedParseInt(environment.get('MAX_HEALTH_RETRIES'), {
+			min: 1,
+			fallback: 3,
+		});
+		const result = await retry(() => this.ping(), {
+			attempts,
+			retryIf: (o) => o.ok && o.value.ok === false,
+			onRetry: (_o, attempt) =>
 				log.warn(
-					`Redpanda health check failed, retrying... (${i}/${maxRetries})`,
-				);
-				await sleep(1000 * i);
-			}
-			result = await this.ping();
-		}
-		if (!result.ok) await this.close();
+					`Redpanda health check failed, retrying... (${attempt}/${attempts})`,
+				),
+		});
+		if (this.breaker.record(result.ok)) await this.close();
 		return result;
+	}
+
+	/** `closed` (healthy) · `open` (down, connections released) · `half-open` (cooldown elapsed, reconnect). */
+	get circuit(): CircuitState {
+		return this.breaker.state;
 	}
 
 	getInstance() {

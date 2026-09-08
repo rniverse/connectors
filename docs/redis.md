@@ -1,22 +1,29 @@
 # Redis Connector
 
-Thin wrapper around Bun's native `RedisClient` with connection lifecycle, health checks, and auto-reconnect.
+Wrapper around [`@valkey/valkey-glide`](https://github.com/valkey-io/valkey-glide)
+with connection lifecycle, health checks, and a Redis-style command adapter.
 
-**Driver:** `bun:RedisClient` (native, zero dependencies)
+**Driver:** `@valkey/valkey-glide`
 
 ## Setup
 
 ```typescript
 import { RedisConnector } from '@rniverse/connectors';
 
+// URL form (rediss:// for TLS, user:pass@ for auth)
 const redis = new RedisConnector({
   url: 'redis://localhost:6379',
-  connectionTimeout: 10000,      // ms (default)
-  idleTimeout: 30000,            // ms (default)
-  autoReconnect: true,           // default
-  maxRetries: 10,                // default
-  enableOfflineQueue: true,      // default
-  enableAutoPipelining: true,    // default
+  requestTimeout: 10000,     // ms — whole request incl. retries (default)
+  connectionTimeout: 10000,  // ms — establish a connection (default)
+  appName: 'my-service',     // CLIENT SETNAME; falls back to INSTANCE_NAME env
+});
+
+// Host form
+const redis2 = new RedisConnector({
+  host: 'localhost',
+  port: 6379,
+  useTLS: false,
+  credentials: { username: 'default', password: 'secret' },
 });
 
 await redis.connect(); // mandatory — verifies via PING
@@ -27,10 +34,7 @@ await redis.connect(); // mandatory — verifies via PING
 ```typescript
 const redis = new RedisConnector({
   url: 'rediss://my-host:6380',
-  tls: {
-    rejectUnauthorized: true,
-    ca: fs.readFileSync('ca.pem', 'utf8'),
-  },
+  tlsInsecure: false, // set true to skip certificate validation
 });
 ```
 
