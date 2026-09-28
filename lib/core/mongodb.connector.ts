@@ -1,24 +1,29 @@
 // lib/core/mongodb.connector.ts
 
-import { environment } from '@rniverse/utils/env';
-import { boundedParseInt } from '@rniverse/utils/generic';
+import { lazy } from '@rniverse/utils/lazy';
 import { log } from '@rniverse/utils/logger';
+import type { BreakerState, CircuitBreaker } from '@rniverse/utils/resilience';
 import type { Result } from '@rniverse/utils/result';
-import { retry } from '@rniverse/utils/retry';
-import { CircuitBreaker, type CircuitState } from '@tools/circuit-breaker.tool';
+import { HealthCheck } from '@tools/health.tool';
 import { initMongoDB } from '@tools/mongodb.tool';
 import type { Db, MongoClient } from 'mongodb';
+import type { HealthCheckOptions } from '../types/health.type';
 import type { MongoDBConnectorConfig } from '../types/mongodb.type';
 
 export class MongoDBConnector {
 	private db: Db | null = null;
 	private client: MongoClient | null = null;
 	private config: MongoDBConnectorConfig;
-	private init_promise: Promise<Db> | null = null;
-	private breaker = new CircuitBreaker();
+	private connection = lazy(() => this.__connect());
+	// Bumped by close(): a connect still in flight when close() runs sees the
+	// change and discards its client instead of reviving a closed connector.
+	private epoch = 0;
+	private checker: HealthCheck<Record<string, unknown>>;
 
 	constructor(config: MongoDBConnectorConfig) {
-		this.config = config;
+		const { health, ...driver } = config;
+		this.config = driver;
+		this.checker = new HealthCheck({ name: 'MongoDB', target: this, health });
 	}
 
 	/**
@@ -26,21 +31,21 @@ export class MongoDBConnector {
 	 * return the same promise. Must be awaited before using any operations.
 	 */
 	async connect(): Promise<Db> {
-		if (!this.init_promise) {
-			this.init_promise = this.__connect();
-		}
-		return this.init_promise;
+		return this.connection.get();
 	}
 
 	private async __connect(): Promise<Db> {
+		const epoch = this.epoch;
 		try {
 			const { client, db } = await initMongoDB(this.config);
+			if (epoch !== this.epoch) {
+				await client.close().catch(() => {});
+				throw new Error('MongoDB connection closed while connecting');
+			}
 			this.client = client;
 			this.db = db;
-			this.breaker.reset();
 			return db;
 		} catch (error) {
-			this.init_promise = null; // allow retry on failure
 			log.error(error, 'Failed to initialize MongoDB connector');
 			throw error;
 		}
@@ -69,26 +74,30 @@ export class MongoDBConnector {
 		}
 	}
 
-	async health(): Promise<Result<Record<string, unknown>>> {
-		const attempts = boundedParseInt(environment.get('MAX_HEALTH_RETRIES'), {
-			min: 1,
-			fallback: 3,
-		});
-		const result = await retry(() => this.ping(), {
-			attempts,
-			retryIf: (o) => o.ok && o.value.ok === false,
-			onRetry: (_o, attempt) =>
-				log.warn(
-					`MongoDB health check failed, retrying... (${attempt}/${attempts})`,
-				),
-		});
-		if (this.breaker.record(result.ok)) await this.close();
-		return result;
+	/**
+	 * Reconnect if needed, ping with a time limit and retries, and trip the
+	 * circuit after repeated failures — see `HealthCheck`. Never throws.
+	 * `{ trial: true }` checks now, skipping the rest of the circuit's cooldown.
+	 */
+	async health(
+		options: HealthCheckOptions = {},
+	): Promise<Result<Record<string, unknown>>> {
+		return this.checker.check(options);
 	}
 
 	/** `closed` (healthy) · `open` (down, connection released) · `half-open` (cooldown elapsed, reconnect). */
-	get circuit(): CircuitState {
-		return this.breaker.state;
+	get circuit(): BreakerState {
+		return this.checker.state;
+	}
+
+	/**
+	 * The health check's circuit breaker — for manual control (`open({ ms })`,
+	 * `reset()`) and read-only state (`failures`, `remaining`). Use
+	 * `health({ trial: true })` rather than `breaker.trial()` to test the
+	 * connection now: it reconnects and pings.
+	 */
+	get breaker(): CircuitBreaker {
+		return this.checker.breaker;
 	}
 
 	getClientInstance(): MongoClient {
@@ -104,6 +113,8 @@ export class MongoDBConnector {
 	}
 
 	async close(): Promise<void> {
+		this.epoch++;
+		this.connection.reset();
 		if (this.client) {
 			await this.client.close().catch((err) => {
 				log.error(err, 'Error closing MongoDB connection');
@@ -111,7 +122,6 @@ export class MongoDBConnector {
 		}
 		this.client = null;
 		this.db = null;
-		this.init_promise = null;
 		log.info('MongoDB connection closed');
 	}
 }

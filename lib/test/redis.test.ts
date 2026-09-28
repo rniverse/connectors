@@ -9,7 +9,7 @@ describe('Redis Comprehensive Tests', () => {
 
 	beforeAll(async () => {
 		connector = new RedisConnector({
-			url: process.env.REDIS_URL || 'redis://localhost:6379',
+			url: process.env.REDIS_URL || 'redis://localhost:56379',
 		});
 		await connector.connect();
 	});
@@ -301,10 +301,10 @@ describe('Redis Comprehensive Tests', () => {
 describe('Redis Pub/Sub Tests', () => {
 	test('PUBLISH and SUBSCRIBE', async () => {
 		const publisher = new RedisConnector({
-			url: process.env.REDIS_URL || 'redis://localhost:6379',
+			url: process.env.REDIS_URL || 'redis://localhost:56379',
 		});
 		const subscriber = new RedisConnector({
-			url: process.env.REDIS_URL || 'redis://localhost:6379',
+			url: process.env.REDIS_URL || 'redis://localhost:56379',
 		});
 
 		await publisher.connect();

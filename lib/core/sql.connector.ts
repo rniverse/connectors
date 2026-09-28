@@ -2,21 +2,28 @@
 
 import { environment } from '@rniverse/utils/env';
 import { boundedParseInt } from '@rniverse/utils/generic';
+import { lazy } from '@rniverse/utils/lazy';
 import { log } from '@rniverse/utils/logger';
+import type { BreakerState, CircuitBreaker } from '@rniverse/utils/resilience';
 import type { Result } from '@rniverse/utils/result';
-import { retry } from '@rniverse/utils/retry';
-import { CircuitBreaker, type CircuitState } from '@tools/circuit-breaker.tool';
 import { initORM } from '@tools/drizzle.tool';
+import { HealthCheck } from '@tools/health.tool';
+import type { HealthCheckOptions } from '@type/health.type';
 import type { SQLConnectorConfig } from '@type/sql.type';
 
 export class SQLConnector {
 	private client: ReturnType<typeof initORM> | null = null;
 	private config: SQLConnectorConfig;
-	private init_promise: Promise<void> | null = null;
-	private breaker = new CircuitBreaker();
+	private connection = lazy(() => this.__connect());
+	// Bumped by close(): a connect still in flight when close() runs sees the
+	// change and discards its pool instead of reviving a closed connector.
+	private epoch = 0;
+	private checker: HealthCheck<void>;
 
 	constructor(config: SQLConnectorConfig) {
-		this.config = config;
+		const { health, ...driver } = config;
+		this.config = driver;
+		this.checker = new HealthCheck({ name: 'SQL', target: this, health });
 	}
 
 	/**
@@ -25,21 +32,20 @@ export class SQLConnector {
 	 * Safe to call multiple times — subsequent calls return the same promise.
 	 */
 	async connect(): Promise<void> {
-		if (!this.init_promise) {
-			this.init_promise = this.__connect();
-		}
-		return this.init_promise;
+		return this.connection.get();
 	}
 
 	private async __connect(): Promise<void> {
+		const epoch = this.epoch;
 		const client = initORM(this.config);
 		try {
 			await client.$client`SELECT 1`;
+			if (epoch !== this.epoch) {
+				throw new Error('SQL connection closed while connecting');
+			}
 			this.client = client;
-			this.breaker.reset();
 			log.info('SQL connected');
 		} catch (err) {
-			this.init_promise = null; // allow retry on failure
 			// The pool was created before the reachability check; close it so we
 			// don't leak connections / a reconnect timer on failure.
 			await client.$client
@@ -83,28 +89,28 @@ export class SQLConnector {
 		}
 	}
 
-	async health(): Promise<Result<void>> {
-		const attempts = boundedParseInt(environment.get('MAX_HEALTH_RETRIES'), {
-			min: 1,
-			fallback: 3,
-		});
-		const result = await retry(() => this.ping(), {
-			attempts,
-			retryIf: (o) => o.ok && o.value.ok === false,
-			onRetry: (_o, attempt) =>
-				log.warn(
-					`SQL health check failed, retrying... (${attempt}/${attempts})`,
-				),
-		});
-		// Only tear the pool down once the breaker actually trips; a single bad
-		// check with CIRCUIT_THRESHOLD > 1 leaves the connection up to retry.
-		if (this.breaker.record(result.ok)) await this.close();
-		return result;
+	/**
+	 * Reconnect if needed, ping with a time limit and retries, and trip the
+	 * circuit after repeated failures — see `HealthCheck`. Never throws.
+	 * `{ trial: true }` checks now, skipping the rest of the circuit's cooldown.
+	 */
+	async health(options: HealthCheckOptions = {}): Promise<Result<void>> {
+		return this.checker.check(options);
 	}
 
 	/** `closed` (healthy) · `open` (down, connection released) · `half-open` (cooldown elapsed, reconnect). */
-	get circuit(): CircuitState {
-		return this.breaker.state;
+	get circuit(): BreakerState {
+		return this.checker.state;
+	}
+
+	/**
+	 * The health check's circuit breaker — for manual control (`open({ ms })`,
+	 * `reset()`) and read-only state (`failures`, `remaining`). Use
+	 * `health({ trial: true })` rather than `breaker.trial()` to test the
+	 * connection now: it reconnects and pings.
+	 */
+	get breaker(): CircuitBreaker {
+		return this.checker.breaker;
 	}
 
 	getInstance() {
@@ -117,6 +123,8 @@ export class SQLConnector {
 	 * immediately.
 	 */
 	async close(options: { timeout?: number } = {}): Promise<void> {
+		this.epoch++;
+		this.connection.reset();
 		if (this.client) {
 			await this.client.$client
 				.end({ timeout: this.closeTimeout(options.timeout) })
@@ -125,7 +133,6 @@ export class SQLConnector {
 				});
 		}
 		this.client = null;
-		this.init_promise = null;
 		log.info('SQL connection closed');
 	}
 }

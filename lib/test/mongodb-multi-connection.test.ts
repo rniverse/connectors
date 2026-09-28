@@ -10,7 +10,7 @@ import type { MongoDBConnectorConfig } from '../types/mongodb.type';
 describe('MongoDB Multi-Connection Tests', () => {
 	let connector1: MongoDBConnector;
 	let connector2: MongoDBConnector;
-	const mongoUrl = env.MONGODB_TEST_URL || 'mongodb://localhost:27017';
+	const mongoUrl = env.MONGODB_TEST_URL || 'mongodb://localhost:57017';
 	let db1: Db;
 	let db2: Db;
 

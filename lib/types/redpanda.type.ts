@@ -1,6 +1,7 @@
 // lib/types/redpanda.type.ts
 
 import type { KafkaConfig } from 'kafkajs';
+import type { HealthOptions } from './health.type';
 
 export type RedpandaTLSConfig =
 	| boolean
@@ -26,6 +27,8 @@ export type RedpandaConnectorCommonConfig = {
 	requestTimeout?: number;
 	ssl?: RedpandaTLSConfig;
 	sasl?: RedpandaSASLConfig;
+	// Health checks + circuit breaker (see HealthOptions).
+	health?: HealthOptions;
 	// Additional Kafka config options (spread last — overrides the above)
 	kafka?: Partial<KafkaConfig>;
 };

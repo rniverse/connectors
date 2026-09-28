@@ -1,11 +1,15 @@
 // lib/types/mongodb.type.ts
 
+import type { HealthOptions } from './health.type';
+
 export type MongoDBConnectorConfig = {
 	url: string; // e.g., 'mongodb://localhost:27017/mydb'
 	database?: string; // Optional - can be included in URL or specified separately
 	// Identifies this app/instance in server logs, db.currentOp() and the profiler.
 	// Falls back to the INSTANCE_NAME env var when not set.
 	appName?: string;
+	// Health checks + circuit breaker (see HealthOptions).
+	health?: HealthOptions;
 	options?: {
 		maxPoolSize?: number;
 		minPoolSize?: number;

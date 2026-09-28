@@ -1,5 +1,7 @@
 // lib/types/sql.type.ts
 
+import type { HealthOptions } from './health.type';
+
 export type SQLConnectorOptionsConfig = {
 	max: number; // pool size (default 20)
 	idleTimeout: number; // seconds (default 30)
@@ -12,6 +14,8 @@ export type SQLConnectorOptionsConfig = {
 	// Raw postgres.js `connection` parameters (server GUCs); `application_name`
 	// here is overridden by `appName` above.
 	connection: Record<string, string | number | boolean>;
+	// Health checks + circuit breaker (see HealthOptions); not passed to postgres.js.
+	health: HealthOptions;
 };
 
 export type SQLConnectorURLConfig = {

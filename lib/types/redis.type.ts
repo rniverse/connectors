@@ -1,5 +1,7 @@
 // lib/types/redis.type.ts
 
+import type { HealthOptions } from './health.type';
+
 export type RedisConnectorOptionsConfig = {
 	// Max time (ms) for a request to complete, including retries/reconnects (default: 10000)
 	requestTimeout?: number;
@@ -10,6 +12,8 @@ export type RedisConnectorOptionsConfig = {
 	// Sets the connection name (CLIENT SETNAME); shows in CLIENT LIST / CLIENT INFO.
 	// Falls back to the INSTANCE_NAME env var when not set.
 	appName?: string;
+	// Health checks + circuit breaker (see HealthOptions).
+	health?: HealthOptions;
 };
 
 export type RedisConnectionURLConfig = {

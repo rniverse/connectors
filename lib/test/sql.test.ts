@@ -11,7 +11,11 @@ describe('SQL Tool Tests', () => {
 	let connector: SQLConnector;
 
 	beforeAll(async () => {
-		connector = new SQLConnector({ url: process.env.POSTGRES_TEST_URL || '' });
+		connector = new SQLConnector({
+			url:
+				process.env.POSTGRES_TEST_URL ||
+				'postgres://tester:tester@localhost:55433/tester',
+		});
 		await connector.connect();
 		const client = connector.getInstance();
 

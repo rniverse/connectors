@@ -57,9 +57,10 @@ await connector.close()    // 3. Tear down
 - `connect()` is **idempotent** — safe to call multiple times.
 - `health()` returns `{ ok: true }` or `{ ok: false, error }` — use for readiness probes.
 - `close()` releases connections and resets state — the instance can be reconnected after.
-- `health()` failures feed a circuit breaker; after `CIRCUIT_THRESHOLD` (default 1)
-  consecutive failures the connector closes itself. `connector.circuit` reports
-  `'closed'` | `'open'` | `'half-open'`; a fresh `connect()` recovers.
+- `health()` failures feed a circuit breaker; after `threshold` (default 3)
+  consecutive failed checks the connector closes itself and `health()` fails
+  fast. After `cooldown` (default 30 s) the next `health()` reconnects on its
+  own. `connector.circuit` reports `'closed'` | `'open'` | `'half-open'`.
 
 ---
 
@@ -470,8 +471,9 @@ new SQLConnector({ url: '...', connectionTimeout: 60 });
 
 ### Redis won't reconnect
 
-Poll `connector.circuit` (`'closed'` | `'open'` | `'half-open'`) and reconnect
-when it isn't `'closed'`. Tune `CIRCUIT_THRESHOLD` / `CIRCUIT_COOLDOWN_MS`.
+Keep calling `health()` (e.g. from a readiness probe): once the circuit's
+`cooldown` passes, the next check reconnects by itself. Tune with
+`config.health` or `CIRCUIT_THRESHOLD` / `CIRCUIT_COOLDOWN_MS`.
 
 ### MongoDB server selection timeout
 
