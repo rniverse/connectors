@@ -4,8 +4,10 @@ Tracking what's deferred after the 2026-09 hardening pass. Not blockers.
 
 ## Tests
 
-Only SQL and `app-name` run without spinning up services. Everything else
-(`mongodb*.test.ts`, `redis.test.ts`, `redpanda.test.ts`) needs a live broker/db.
+`bun run docker:up` starts every service the suite needs (`docker-compose.yml`:
+postgres, kafka, valkey, mongodb on offset host ports); `.env.test` points the
+tests at them. `bun run test` sets `NODE_ENV=test` so `.env.test` wins over a
+local `.env`.
 
 - [ ] **Mongo / Redis / Redpanda connector-lifecycle tests** — mirror
   `sql-connector.test.ts` (connect idempotency, `appName` → identity tag,
@@ -15,8 +17,9 @@ Only SQL and `app-name` run without spinning up services. Everything else
   asserts concurrent `connect()` calls resolve; it does *not* prove a second
   pool isn't opened. Add a check against `pg_stat_activity` connection count
   for the connector's `application_name`.
-- [ ] **Circuit breaker `half-open`** — no test exercises the cooldown → probe
-  transition (would need a fake clock or a short `CIRCUIT_COOLDOWN_MS`).
+- [x] **Circuit breaker `half-open`** — `health.test.ts` (fake target) and
+  `sql-connector.test.ts` (real Postgres) cover open → cooldown → trial →
+  reconnect → closed with a short `cooldown`.
 - [ ] **Redis pub/sub** — `subscribe` / `unsubscribe` / `publish` /
   `subscriber.add()` have no coverage. Verify message delivery and that
   `subscriber.add()` clients are closed by `close()`.
@@ -35,28 +38,28 @@ Only SQL and `app-name` run without spinning up services. Everything else
   - [ ] The "connect succeeds, then the verify step throws" sub-case (the actual
     target of the `.end()` fix) isn't reproducible against a healthy server —
     would need fault injection.
-- [ ] **CI** — add a `docker-compose.yml` service matrix + a `pretest` that
-  waits for readiness, so the full suite runs on every push.
+- [ ] **CI** — `docker-compose.yml` exists now (`bun run docker:up` waits for
+  readiness); still to wire into a CI job.
 
 ## Known design choices (not bugs, listed so they're not "rediscovered")
 
-- **`health()` releases the connection when the circuit opens.** With the
-  default `CIRCUIT_THRESHOLD=1` this means one failed health check (after its
-  own `MAX_HEALTH_RETRIES` retries) closes the pool. Raise `CIRCUIT_THRESHOLD`
-  to tolerate transient blips. `connector.circuit` reports the state; a fresh
-  `connect()` recovers.
+- **`health()` releases the connection when the circuit opens** — after
+  `threshold` (default 3) consecutive failed checks. After `cooldown` the next
+  `health()` reconnects on its own; nothing else needs to call `connect()`.
 - **`connect()` return types differ** — `void` (SQL, Redis), `Db` (Mongo),
   `Admin` (Redpanda). Left as-is for now.
-- **No per-attempt timeout inside `ping()`.** A hung driver call makes
-  `health()` hang for that attempt. `retry` has no timeout; if this bites,
-  wrap `ping()` in `Promise.race` with a deadline.
+- **Ping timeout bounds the wait, not the driver call.** `health()` stops
+  waiting after `timeout`, but a driver call that ignores cancellation (kafkajs)
+  keeps running in the background. kafkajs's own `connectionTimeout` (10 s) /
+  `requestTimeout` (30 s) / retries still apply underneath.
 - **Redis pub/sub uses RESP3 multiplexing** (glide default) — the main client
   can `subscribe()` and still run `get`/`set`. `subscriber.add()` gives a dedicated
   connection when you want isolation.
 
 ## Nice-to-have
 
-- [ ] `SQLConnector.close()` / breaker cooldown could be configurable per
-  instance rather than only via env.
+- [x] Breaker / health settings are configurable per instance (`config.health`).
+- [ ] `SQLConnector.close()` timeout could be configurable per instance rather
+  than only via env / the `close({ timeout })` argument.
 - [ ] `GlideClientAdapter` still exposes `send()` returning `any` and `sadd()`
   taking `...any[]` — could tighten.

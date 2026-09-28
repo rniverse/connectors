@@ -4,10 +4,18 @@
 	"module": "index.ts",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
-	"files": ["dist"],
+	"files": [
+		"dist"
+	],
 	"exports": {
-		".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-		"./sql": { "types": "./dist/lib/sql.d.ts", "default": "./dist/lib/sql.js" },
+		".": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		},
+		"./sql": {
+			"types": "./dist/lib/sql.d.ts",
+			"default": "./dist/lib/sql.js"
+		},
 		"./mongodb": {
 			"types": "./dist/lib/mongodb.d.ts",
 			"default": "./dist/lib/mongodb.js"
@@ -24,7 +32,9 @@
 	},
 	"scripts": {
 		"lint": "biome check --write",
-		"test": "bun test",
+		"test": "NODE_ENV=test bun test",
+		"docker:up": "docker compose up -d --wait",
+		"docker:down": "docker compose down -v",
 		"build": "bun run tsc --project tsconfig.build.json && bun run tsc-alias --project tsconfig.build.json",
 		"biome": "biome",
 		"db:generate": "drizzle-kit generate",

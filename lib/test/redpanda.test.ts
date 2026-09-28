@@ -5,7 +5,7 @@ import { RedpandaConnector } from '@core/redpanda.connector';
 import { log } from '@rniverse/utils/logger';
 import type { Admin } from 'kafkajs';
 
-const REDPANDA_URL = process.env.REDPANDA_URL || 'localhost:9092';
+const REDPANDA_URL = process.env.REDPANDA_URL || 'localhost:59092';
 
 describe('Redpanda Connector Tests', () => {
 	let connector: RedpandaConnector;

@@ -31,7 +31,7 @@ describe('MongoDB Connector Tests', () => {
 
 	beforeAll(async () => {
 		connector = new MongoDBConnector({
-			url: process.env.MONGODB_TEST_URL || 'mongodb://localhost:27017/testdb',
+			url: process.env.MONGODB_TEST_URL || 'mongodb://localhost:57017/testdb',
 			database: 'testdb',
 		});
 		db = await connector.connect();

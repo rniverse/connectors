@@ -1,12 +1,12 @@
 // lib/core/redis.connector.ts
 
-import { environment } from '@rniverse/utils/env';
-import { boundedParseInt } from '@rniverse/utils/generic';
+import { lazy } from '@rniverse/utils/lazy';
 import { log } from '@rniverse/utils/logger';
+import type { BreakerState, CircuitBreaker } from '@rniverse/utils/resilience';
 import type { Result } from '@rniverse/utils/result';
-import { retry } from '@rniverse/utils/retry';
-import { CircuitBreaker, type CircuitState } from '@tools/circuit-breaker.tool';
+import { HealthCheck } from '@tools/health.tool';
 import { initRedis } from '@tools/redis.tool';
+import type { HealthCheckOptions } from '@type/health.type';
 import type { RedisConnectorConfig } from '@type/redis.type';
 import {
 	GlideClient,
@@ -235,22 +235,28 @@ export class GlideClientAdapter {
 export class RedisConnector {
 	private client: GlideClientAdapter | null = null;
 	private config: RedisConnectorConfig;
-	private init_promise: Promise<void> | null = null;
+	private connection = lazy(() => this.__connect());
+	// Bumped by close(): a connect still in flight when close() runs sees the
+	// change and discards its client instead of reviving a closed connector.
+	private epoch = 0;
 	private subscribers = new Set<GlideClientAdapter>();
-	private breaker = new CircuitBreaker();
+	private checker: HealthCheck<unknown>;
 
 	constructor(config: RedisConnectorConfig) {
-		this.config = config;
+		const { health, ...driver } = config;
+		this.config = driver;
+		this.checker = new HealthCheck({ name: 'Redis', target: this, health });
 	}
 
 	async connect(): Promise<void> {
-		if (!this.init_promise) {
-			this.init_promise = this.__connect();
-		}
-		return this.init_promise;
+		return this.connection.get();
 	}
 
 	private async __connect(): Promise<void> {
+		const epoch = this.epoch;
+		// Local until verified: only a connect that's still current may become
+		// `this.client`, so a stale one can never overwrite a newer client.
+		let client: GlideClientAdapter | null = null;
 		try {
 			const clientConfig = initRedis(this.config);
 			clientConfig.pubsubSubscriptions = {
@@ -262,18 +268,19 @@ export class RedisConnector {
 				},
 			};
 			const glideClient = await GlideClient.createClient(clientConfig);
-			this.client = new GlideClientAdapter(glideClient, clientConfig);
-			await this.client.send('PING', []);
-			this.breaker.reset();
+			client = new GlideClientAdapter(glideClient, clientConfig);
+			await client.send('PING', []);
+			if (epoch !== this.epoch) {
+				throw new Error('Redis connection closed while connecting');
+			}
+			this.client = client;
 			log.info('Redis connected');
 		} catch (err) {
-			this.init_promise = null;
 			try {
-				this.client?.close();
+				client?.close();
 			} catch (closeErr) {
 				log.error(closeErr, 'Error closing Redis client after failed connect');
 			}
-			this.client = null;
 			log.error(err, 'Redis connection failed');
 			throw err;
 		}
@@ -295,26 +302,28 @@ export class RedisConnector {
 		}
 	}
 
-	async health(): Promise<Result<unknown>> {
-		const attempts = boundedParseInt(environment.get('MAX_HEALTH_RETRIES'), {
-			min: 1,
-			fallback: 3,
-		});
-		const result = await retry(() => this.ping(), {
-			attempts,
-			retryIf: (o) => o.ok && o.value.ok === false,
-			onRetry: (_o, attempt) =>
-				log.warn(
-					`Redis health check failed, retrying... (${attempt}/${attempts})`,
-				),
-		});
-		if (this.breaker.record(result.ok)) await this.close();
-		return result;
+	/**
+	 * Reconnect if needed, ping with a time limit and retries, and trip the
+	 * circuit after repeated failures — see `HealthCheck`. Never throws.
+	 * `{ trial: true }` checks now, skipping the rest of the circuit's cooldown.
+	 */
+	async health(options: HealthCheckOptions = {}): Promise<Result<unknown>> {
+		return this.checker.check(options);
 	}
 
 	/** `closed` (healthy) · `open` (down, connection released) · `half-open` (cooldown elapsed, reconnect). */
-	get circuit(): CircuitState {
-		return this.breaker.state;
+	get circuit(): BreakerState {
+		return this.checker.state;
+	}
+
+	/**
+	 * The health check's circuit breaker — for manual control (`open({ ms })`,
+	 * `reset()`) and read-only state (`failures`, `remaining`). Use
+	 * `health({ trial: true })` rather than `breaker.trial()` to test the
+	 * connection now: it reconnects and pings.
+	 */
+	get breaker(): CircuitBreaker {
+		return this.checker.breaker;
 	}
 
 	getInstance() {
@@ -344,6 +353,8 @@ export class RedisConnector {
 	};
 
 	async close(): Promise<void> {
+		this.epoch++;
+		this.connection.reset();
 		for (const sub of this.subscribers) {
 			try {
 				sub.close();
@@ -361,7 +372,6 @@ export class RedisConnector {
 			}
 		}
 		this.client = null;
-		this.init_promise = null;
 		log.info('Redis connection closed');
 	}
 }

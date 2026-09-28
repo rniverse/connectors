@@ -4,7 +4,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { SQLConnector } from '@core/sql.connector';
 
-const URL = process.env.POSTGRES_TEST_URL || '';
+const URL =
+	process.env.POSTGRES_TEST_URL ||
+	'postgres://tester:tester@localhost:55433/tester';
 
 const appNameOf = async (c: SQLConnector) => {
 	const rows = await c.getInstance()
@@ -101,6 +103,62 @@ describe('SQLConnector lifecycle', () => {
 			expect(connector.circuit).not.toBe('closed');
 			expect(() => connector!.getInstance()).toThrow(/not connected/);
 			delete process.env.CIRCUIT_THRESHOLD;
+		});
+
+		test('health() reconnects on its own once the cooldown passes', async () => {
+			connector = new SQLConnector({
+				url: URL,
+				health: { threshold: 1, cooldown: 50, attempts: 1 },
+			});
+			await connector.connect();
+			await connector.getInstance().$client.end({ timeout: 1 });
+			expect((await connector.health()).ok).toBe(false);
+			expect(connector.circuit).toBe('open');
+
+			await new Promise((resolve) => setTimeout(resolve, 70));
+			expect((await connector.health()).ok).toBe(true); // trial reconnected
+			expect(connector.circuit).toBe('closed');
+			expect(connector.getInstance()).toBeDefined();
+		});
+	});
+
+	describe('manual control', () => {
+		test('health({ trial: true }) reconnects now instead of waiting out the cooldown', async () => {
+			connector = new SQLConnector({
+				url: URL,
+				health: { threshold: 1, cooldown: 60_000, attempts: 1 },
+			});
+			await connector.connect();
+			await connector.getInstance().$client.end({ timeout: 1 });
+			await connector.health();
+			expect(connector.circuit).toBe('open');
+			expect(connector.breaker.remaining).toBeGreaterThan(50_000);
+
+			expect((await connector.health({ trial: true })).ok).toBe(true);
+			expect(connector.circuit).toBe('closed');
+		});
+
+		test('breaker.open({ ms }) makes health() fail fast; reset() lets it through', async () => {
+			connector = new SQLConnector({ url: URL, health: { attempts: 1 } });
+			await connector.connect();
+			connector.breaker.open({ ms: 60_000 });
+			const refused = await connector.health();
+			expect(refused.ok).toBe(false);
+			connector.breaker.reset();
+			expect((await connector.health()).ok).toBe(true);
+		});
+	});
+
+	describe('close() during connect()', () => {
+		test('the in-flight connect is discarded, not revived', async () => {
+			connector = new SQLConnector({ url: URL });
+			const pending = connector.connect();
+			await connector.close();
+			await expect(pending).rejects.toThrow(/closed while connecting/);
+			expect(() => connector!.getInstance()).toThrow(/not connected/);
+
+			await connector.connect(); // a fresh connect still works
+			expect(connector.getInstance()).toBeDefined();
 		});
 	});
 });
