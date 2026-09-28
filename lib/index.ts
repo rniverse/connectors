@@ -1,7 +1,7 @@
-export * from './core';
-export * from './tools';
-export type * from './types/health.type';
-export type * from './types/mongodb.type';
-export type * from './types/redis.type';
-export type * from './types/redpanda.type';
-export type * from './types/sql.type';
+// @rniverse/connectors — everything. Loads every driver; prefer the subpaths
+// (`/postgres`, `/redis`, `/mongo`, `/kafka`), which load only their own.
+export * from './core/kafka';
+export * from './core/mongo';
+export * from './core/postgres';
+export * from './core/redis';
+export * from './shared';

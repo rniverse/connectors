@@ -14,7 +14,7 @@
 		"removeComments": false
 	},
 	"include": ["index.ts", "lib/**/*.ts"],
-	"exclude": ["lib/test", "dist", "node_modules"],
+	"exclude": ["test", "dist", "node_modules"],
 	"tsc-alias": {
 		"resolveFullPaths": true
 	}

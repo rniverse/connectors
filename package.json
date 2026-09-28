@@ -12,21 +12,25 @@
 			"types": "./dist/index.d.ts",
 			"default": "./dist/index.js"
 		},
-		"./sql": {
-			"types": "./dist/lib/sql.d.ts",
-			"default": "./dist/lib/sql.js"
+		"./shared": {
+			"types": "./dist/lib/shared/index.d.ts",
+			"default": "./dist/lib/shared/index.js"
 		},
-		"./mongodb": {
-			"types": "./dist/lib/mongodb.d.ts",
-			"default": "./dist/lib/mongodb.js"
+		"./postgres": {
+			"types": "./dist/lib/core/postgres/index.d.ts",
+			"default": "./dist/lib/core/postgres/index.js"
 		},
 		"./redis": {
-			"types": "./dist/lib/redis.d.ts",
-			"default": "./dist/lib/redis.js"
+			"types": "./dist/lib/core/redis/index.d.ts",
+			"default": "./dist/lib/core/redis/index.js"
 		},
-		"./redpanda": {
-			"types": "./dist/lib/redpanda.d.ts",
-			"default": "./dist/lib/redpanda.js"
+		"./mongo": {
+			"types": "./dist/lib/core/mongo/index.d.ts",
+			"default": "./dist/lib/core/mongo/index.js"
+		},
+		"./kafka": {
+			"types": "./dist/lib/core/kafka/index.d.ts",
+			"default": "./dist/lib/core/kafka/index.js"
 		},
 		"./package.json": "./package.json"
 	},
