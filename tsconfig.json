@@ -26,10 +26,8 @@
 		"noUnusedParameters": false,
 		"noPropertyAccessFromIndexSignature": false,
 		"paths": {
-			"@tools": ["./lib/tools/index.ts"],
-			"@tools/*": ["./lib/tools/*"],
-			"@type": ["./lib/types"],
-			"@type/*": ["./lib/types/*"],
+			"@shared": ["./lib/shared/index.ts"],
+			"@shared/*": ["./lib/shared/*"],
 			"@core": ["./lib/core"],
 			"@core/*": ["./lib/core/*"],
 			"@migrations": ["./lib/migrations"],
