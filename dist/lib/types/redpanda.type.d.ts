@@ -1,4 +1,5 @@
 import type { KafkaConfig } from 'kafkajs';
+import type { HealthOptions } from './health.type.js';
 export type RedpandaTLSConfig = boolean | {
     rejectUnauthorized?: boolean;
     ca?: string[];
@@ -17,6 +18,7 @@ export type RedpandaConnectorCommonConfig = {
     requestTimeout?: number;
     ssl?: RedpandaTLSConfig;
     sasl?: RedpandaSASLConfig;
+    health?: HealthOptions;
     kafka?: Partial<KafkaConfig>;
 };
 export type RedpandaConnectorConfig = RedpandaConnectorCommonConfig & {

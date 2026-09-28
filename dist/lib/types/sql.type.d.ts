@@ -1,3 +1,4 @@
+import type { HealthOptions } from './health.type.js';
 export type SQLConnectorOptionsConfig = {
     max: number;
     idleTimeout: number;
@@ -6,6 +7,7 @@ export type SQLConnectorOptionsConfig = {
     prepare: boolean;
     appName: string;
     connection: Record<string, string | number | boolean>;
+    health: HealthOptions;
 };
 export type SQLConnectorURLConfig = {
     url: string;

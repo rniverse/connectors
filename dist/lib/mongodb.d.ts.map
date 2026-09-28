@@ -1,1 +1,1 @@
-{"version":3,"file":"mongodb.d.ts","sourceRoot":"","sources":["../../lib/mongodb.ts"],"names":[],"mappings":"AACA,cAAc,0BAA0B,CAAC;AACzC,cAAc,8BAA8B,CAAC;AAC7C,cAAc,sBAAsB,CAAC;AACrC,mBAAmB,sBAAsB,CAAC"}
+{"version":3,"file":"mongodb.d.ts","sourceRoot":"","sources":["../../lib/mongodb.ts"],"names":[],"mappings":"AACA,cAAc,0BAA0B,CAAC;AACzC,cAAc,sBAAsB,CAAC;AACrC,mBAAmB,sBAAsB,CAAC"}

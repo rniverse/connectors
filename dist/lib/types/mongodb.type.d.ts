@@ -1,7 +1,9 @@
+import type { HealthOptions } from './health.type.js';
 export type MongoDBConnectorConfig = {
     url: string;
     database?: string;
     appName?: string;
+    health?: HealthOptions;
     options?: {
         maxPoolSize?: number;
         minPoolSize?: number;

@@ -1,5 +1,6 @@
+import type { BreakerState, CircuitBreaker } from '@rniverse/utils/resilience';
 import type { Result } from '@rniverse/utils/result';
-import { type CircuitState } from '../tools/circuit-breaker.tool.js';
+import type { HealthCheckOptions } from '../types/health.type.js';
 import type { RedisConnectorConfig } from '../types/redis.type.js';
 import { GlideClient, type GlideClientConfiguration, type PubSubMsg } from '@valkey/valkey-glide';
 /** Options for {@link GlideClientAdapter.set}, mapped to the driver's native set options. */
@@ -50,17 +51,30 @@ export declare class GlideClientAdapter {
 export declare class RedisConnector {
     private client;
     private config;
-    private init_promise;
+    private connection;
+    private epoch;
     private subscribers;
-    private breaker;
+    private checker;
     constructor(config: RedisConnectorConfig);
     connect(): Promise<void>;
     private __connect;
     private require_client;
     ping(): Promise<Result<unknown>>;
-    health(): Promise<Result<unknown>>;
+    /**
+     * Reconnect if needed, ping with a time limit and retries, and trip the
+     * circuit after repeated failures — see `HealthCheck`. Never throws.
+     * `{ trial: true }` checks now, skipping the rest of the circuit's cooldown.
+     */
+    health(options?: HealthCheckOptions): Promise<Result<unknown>>;
     /** `closed` (healthy) · `open` (down, connection released) · `half-open` (cooldown elapsed, reconnect). */
-    get circuit(): CircuitState;
+    get circuit(): BreakerState;
+    /**
+     * The health check's circuit breaker — for manual control (`open({ ms })`,
+     * `reset()`) and read-only state (`failures`, `remaining`). Use
+     * `health({ trial: true })` rather than `breaker.trial()` to test the
+     * connection now: it reconnects and pings.
+     */
+    get breaker(): CircuitBreaker;
     getInstance(): GlideClientAdapter;
     /**
      * Dedicated pub/sub connections. `subscribe()` on the main client is fine

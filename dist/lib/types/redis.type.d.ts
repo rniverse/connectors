@@ -1,8 +1,10 @@
+import type { HealthOptions } from './health.type.js';
 export type RedisConnectorOptionsConfig = {
     requestTimeout?: number;
     connectionTimeout?: number;
     tlsInsecure?: boolean;
     appName?: string;
+    health?: HealthOptions;
 };
 export type RedisConnectionURLConfig = {
     url: string;

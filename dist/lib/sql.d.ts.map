@@ -1,1 +1,1 @@
-{"version":3,"file":"sql.d.ts","sourceRoot":"","sources":["../../lib/sql.ts"],"names":[],"mappings":"AAGA,cAAc,sBAAsB,CAAC;AACrC,cAAc,8BAA8B,CAAC;AAC7C,cAAc,sBAAsB,CAAC;AACrC,mBAAmB,kBAAkB,CAAC"}
+{"version":3,"file":"sql.d.ts","sourceRoot":"","sources":["../../lib/sql.ts"],"names":[],"mappings":"AAGA,cAAc,sBAAsB,CAAC;AACrC,cAAc,sBAAsB,CAAC;AACrC,mBAAmB,kBAAkB,CAAC"}

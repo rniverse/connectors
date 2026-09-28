@@ -1,15 +1,17 @@
+import type { BreakerState, CircuitBreaker } from '@rniverse/utils/resilience';
 import type { Result } from '@rniverse/utils/result';
-import { type CircuitState } from '../tools/circuit-breaker.tool.js';
+import type { HealthCheckOptions } from '../types/health.type.js';
 import type { RedpandaConnectorConfig, RedpandaConnectorURLConfig } from '../types/redpanda.type.js';
 import type { Admin, Consumer, ConsumerConfig, Producer, ProducerConfig } from 'kafkajs';
 export declare class RedpandaConnector {
     private kafka;
     private adminClient;
-    private admin_promise;
+    private admin;
+    private epoch;
     private config;
     private consumers;
     private producers;
-    private breaker;
+    private checker;
     constructor(config: RedpandaConnectorConfig | RedpandaConnectorURLConfig);
     /**
      * Verify connectivity by performing an admin listTopics call.
@@ -37,9 +39,21 @@ export declare class RedpandaConnector {
      */
     disconnect(client: Producer | Consumer): Promise<void>;
     ping(): Promise<Result<void>>;
-    health(): Promise<Result<void>>;
+    /**
+     * Reconnect if needed, ping with a time limit and retries, and trip the
+     * circuit after repeated failures — see `HealthCheck`. Never throws.
+     * `{ trial: true }` checks now, skipping the rest of the circuit's cooldown.
+     */
+    health(options?: HealthCheckOptions): Promise<Result<void>>;
     /** `closed` (healthy) · `open` (down, connections released) · `half-open` (cooldown elapsed, reconnect). */
-    get circuit(): CircuitState;
+    get circuit(): BreakerState;
+    /**
+     * The health check's circuit breaker — for manual control (`open({ ms })`,
+     * `reset()`) and read-only state (`failures`, `remaining`). Use
+     * `health({ trial: true })` rather than `breaker.trial()` to test the
+     * connection now: it reconnects and pings.
+     */
+    get breaker(): CircuitBreaker;
     getInstance(): import("kafkajs").Kafka;
     close(): Promise<void>;
 }
