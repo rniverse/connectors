@@ -1,7 +1,8 @@
 // test/shared/health.test.ts
 
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { sleep } from '@rniverse/utils/generic';
+import { log } from '@rniverse/utils/logger';
 import { CircuitOpenError, TimeoutError } from '@rniverse/utils/resilience';
 import type { Result } from '@rniverse/utils/result';
 import { HealthCheck } from '@shared/health';
@@ -208,5 +209,61 @@ describe('HealthCheck — manual trial', () => {
 		expect(result.ok).toBe(false);
 		expect(health.state).toBe('open');
 		expect(target.trips).toBe(trips + 1);
+	});
+});
+
+describe('HealthCheck — how a retried check ended', () => {
+	afterEach(() => {
+		(log.info as unknown as { mockRestore?: () => void }).mockRestore?.();
+		(log.warn as unknown as { mockRestore?: () => void }).mockRestore?.();
+	});
+
+	test('logs the attempt a retried check passed on', async () => {
+		const info = spyOn(log, 'info');
+		const target = fakeTarget();
+		let calls = 0;
+		const ping = target.ping;
+		target.ping = async () => {
+			calls++;
+			if (calls === 1) return { ok: false, error: new Error('slow') };
+			return ping();
+		};
+		const health = new HealthCheck({
+			name: 'Fake',
+			target,
+			health: { ...quick, attempts: 3 },
+		});
+		expect((await health.check()).ok).toBe(true);
+		expect(info.mock.calls.map((call) => String(call[0]))).toContain(
+			'Fake health check passed on attempt 2/3',
+		);
+	});
+
+	test('logs a retried check that ran out of attempts', async () => {
+		const warn = spyOn(log, 'warn');
+		const target = fakeTarget();
+		target.mode = 'fail';
+		const health = new HealthCheck({
+			name: 'Fake',
+			target,
+			health: { ...quick, attempts: 2, threshold: 5 },
+		});
+		await health.check();
+		expect(warn.mock.calls.map((call) => String(call[0]))).toContain(
+			'Fake health check failed after 2 attempts',
+		);
+	});
+
+	test('a first-try pass logs nothing extra', async () => {
+		const info = spyOn(log, 'info');
+		const health = new HealthCheck({
+			name: 'Fake',
+			target: fakeTarget(),
+			health: quick,
+		});
+		await health.check();
+		expect(
+			info.mock.calls.some((call) => String(call[0]).includes('passed on')),
+		).toBe(false);
 	});
 });
