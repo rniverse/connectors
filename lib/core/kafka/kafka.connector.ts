@@ -1,22 +1,18 @@
 // lib/core/kafka/kafka.connector.ts
 
 import type { Result } from '@rniverse/utils/result';
-import { Connector } from '@shared/link';
+import { Connector, type Links } from '@shared/link';
 import { appName } from '@shared/setting';
 import type { Admin, Kafka } from 'kafkajs';
 import { KafkaConsumer } from './kafka.consumer';
 import { client } from './kafka.helper';
 import { KafkaProducer } from './kafka.producer';
-import type {
-	KafkaConfig,
-	KafkaConsumerOptions,
-	KafkaProducerOptions,
-} from './kafka.type';
+import type { KafkaConfig } from './kafka.type';
 
 /**
  * One Kafka / Redpanda cluster — `getInstance()` is the kafkajs `Kafka`; the
  * connector's own connection is its admin client. Extra connections:
- * `producer()`, `consumer()`.
+ * `producers`, `consumers` (config).
  */
 export class KafkaConnector extends Connector<Kafka> {
 	private readonly config: KafkaConfig;
@@ -29,6 +25,24 @@ export class KafkaConnector extends Connector<Kafka> {
 		super(config);
 		this.config = config;
 		this.appName = appName({ value: config.appName, connector: config.name });
+		for (const { name, health, ...settings } of config.producers ?? []) {
+			this.__adopt(
+				new KafkaProducer({
+					...this.__child({ name, health }),
+					cluster: this,
+					settings,
+				}),
+			);
+		}
+		for (const { name, health, ...settings } of config.consumers ?? []) {
+			this.__adopt(
+				new KafkaConsumer({
+					...this.__child({ name, health }),
+					cluster: this,
+					settings,
+				}),
+			);
+		}
 	}
 
 	/** The connector's own admin connection. */
@@ -38,30 +52,12 @@ export class KafkaConnector extends Connector<Kafka> {
 		return admin;
 	}
 
-	producer(options: KafkaProducerOptions): KafkaProducer {
-		const { name, health, on, ...settings } = options;
-		return new KafkaProducer({
-			...this.__child({ name, health, on }),
-			parent: this,
-			settings,
-		});
+	get producers(): Links<KafkaProducer> {
+		return this.__of({ kind: KafkaProducer });
 	}
 
-	consumer(options: KafkaConsumerOptions): KafkaConsumer {
-		const { name, health, on, ...settings } = options;
-		return new KafkaConsumer({
-			...this.__child({ name, health, on }),
-			parent: this,
-			settings,
-		});
-	}
-
-	get producers(): ReadonlyMap<string, KafkaProducer> {
-		return this.scope.of({ kind: KafkaProducer });
-	}
-
-	get consumers(): ReadonlyMap<string, KafkaConsumer> {
-		return this.scope.of({ kind: KafkaConsumer });
+	get consumers(): Links<KafkaConsumer> {
+		return this.__of({ kind: KafkaConsumer });
 	}
 
 	protected async __open(): Promise<Kafka> {

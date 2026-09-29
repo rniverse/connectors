@@ -66,21 +66,38 @@ describe('RedisConnector', () => {
 		expect(() => connector!.getInstance()).toThrow(LinkError);
 	});
 
-	describe('subscriber()', () => {
-		test('receives PUBLISH on channels and patterns', async () => {
-			connector = make();
-			await connector.connect();
-			const received: unknown[] = [];
-			const sub = connector.subscriber({
-				name: 'events',
-				channels: ['connector:events'],
-				patterns: ['connector:p:*'],
-				onMessage: (m) => received.push(m),
+	describe('subscribers', () => {
+		/** A connector with one declared subscriber that records its messages. */
+		const subscribed = (
+			extra: Partial<ConstructorParameters<typeof RedisConnector>[0]> = {},
+		) => {
+			connector = make({
+				subscribers: [
+					{
+						name: 'events',
+						channels: ['connector:events'],
+						patterns: ['connector:p:*'],
+					},
+				],
+				...extra,
 			});
-			await sub.connect();
-			expect(sub.state).toBe('ready');
+			const sub = connector.subscribers.get('events');
+			const received: unknown[] = [];
+			sub.on('message', {
+				name: 'test',
+				handler: (message) => {
+					received.push(message);
+				},
+			});
+			return { sub, received };
+		};
 
-			const glide = connector.getInstance();
+		test('connects with its connector; message events on channels and patterns', async () => {
+			const { sub, received } = subscribed();
+			await connector!.connect();
+			await until(() => sub.state === 'ready');
+
+			const glide = connector!.getInstance();
 			await sleep(200); // let the SUBSCRIBE settle server-side
 			await glide.publish('hello', 'connector:events');
 			await glide.publish('world', 'connector:p:one');
@@ -96,54 +113,32 @@ describe('RedisConnector', () => {
 			});
 		});
 
-		test('tracked by name; duplicates throw; close frees the name', async () => {
-			connector = make();
-			await connector.connect();
-			const first = connector.subscriber({
-				name: 's',
-				channels: ['a'],
-				onMessage: () => {},
-			});
-			expect(connector.subscribers.get('s')).toBe(first);
-			expect(() =>
-				connector!.subscriber({
-					name: 's',
-					channels: ['b'],
-					onMessage: () => {},
-				}),
-			).toThrow(LinkError);
-			await first.close();
-			expect(connector.subscribers.has('s')).toBe(false);
+		test('looked up by name; an unknown name throws UNKNOWN_NAME', () => {
+			const { sub } = subscribed();
+			expect(sub.channels).toEqual(['connector:events']);
+			expect(() => connector!.subscribers.get('nope')).toThrow(LinkError);
 		});
 
-		test('connect() before the connector is connected → NOT_READY', async () => {
-			connector = make();
-			const sub = connector.subscriber({
-				name: 's',
-				channels: ['a'],
-				onMessage: () => {},
-			});
-			await expect(sub.connect()).rejects.toBeInstanceOf(LinkError);
+		test('connect() before the connector is ready waits — no throw, stays idle', async () => {
+			const { sub } = subscribed();
+			await sub.connect();
+			expect(sub.state).toBe('idle');
 		});
 
-		test("the connector's breaker releasing it fails its subscribers; closing it closes them", async () => {
-			connector = make({
+		test('the connector failing takes the subscriber down and back — same client; closing closes it', async () => {
+			const { sub } = subscribed({
 				health: { threshold: 1, cooldown: 60_000, attempts: 1 },
 			});
-			await connector.connect();
-			const sub = connector.subscriber({
-				name: 's',
-				channels: ['a'],
-				onMessage: () => {},
-			});
-			await sub.connect();
-			connector.breaker.open({ ms: 60_000 });
-			await until(() => sub.state === 'failed');
-			connector.breaker.reset();
-			await connector.connect();
-			await sub.connect();
+			await connector!.connect();
+			await until(() => sub.state === 'ready');
+			const client = sub.getInstance();
+			connector!.breaker.open({ ms: 60_000 });
+			expect(sub.state).toBe('failed');
+			connector!.breaker.reset();
+			expect((await connector!.health()).ok).toBe(true);
 			expect(sub.state).toBe('ready');
-			await connector.close();
+			expect(sub.getInstance()).toBe(client);
+			await connector!.close();
 			expect(sub.state).toBe('closed');
 			connector = undefined;
 		});

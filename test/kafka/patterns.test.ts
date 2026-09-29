@@ -2,7 +2,11 @@
 // kafkajs usage patterns through the connector's producer / consumer links.
 
 import { afterAll, describe, expect, test } from 'bun:test';
-import { KafkaConnector } from '@core/kafka';
+import {
+	KafkaConnector,
+	type KafkaConsumerOptions,
+	type KafkaProducerOptions,
+} from '@core/kafka';
 import { log } from '@rniverse/utils/logger';
 import type { Link } from '@shared/link';
 import type { Admin, Consumer, Producer } from 'kafkajs';
@@ -11,17 +15,43 @@ const BROKERS = process.env.REDPANDA_URL || 'localhost:59092';
 
 let count = 0;
 const unique = (prefix: string) => `${prefix}-${++count}`;
-// The link behind each raw kafkajs object a test holds, so "disconnect" closes the link.
-const links = new Map<Producer | Consumer, Link<unknown>>();
+// Extras are declared in a connector's config, so each producer / consumer a
+// test opens gets its own connector; "disconnect" closes that connector.
+const parents = new Map<Link<unknown>, KafkaConnector>();
+const owners = new Map<Producer | Consumer, KafkaConnector>();
+const extras = {
+	producer(options: KafkaProducerOptions) {
+		const parent = new KafkaConnector({
+			name: unique('kafka'),
+			brokers: BROKERS,
+			producers: [options],
+		});
+		const link = parent.producers.get(options.name);
+		parents.set(link as Link<unknown>, parent);
+		return link;
+	},
+	consumer(options: KafkaConsumerOptions) {
+		const parent = new KafkaConnector({
+			name: unique('kafka'),
+			brokers: BROKERS,
+			consumers: [options],
+		});
+		const link = parent.consumers.get(options.name);
+		parents.set(link as Link<unknown>, parent);
+		return link;
+	},
+};
 async function open<T extends Producer | Consumer>(link: Link<T>): Promise<T> {
+	const parent = parents.get(link as Link<unknown>);
+	await parent?.connect();
 	await link.connect();
 	const instance = link.getInstance();
-	links.set(instance, link as Link<unknown>);
+	if (parent) owners.set(instance, parent);
 	return instance;
 }
 async function release(instance: Producer | Consumer): Promise<void> {
-	await links.get(instance)?.close();
-	links.delete(instance);
+	await owners.get(instance)?.close();
+	owners.delete(instance);
 }
 
 describe('Kafka patterns', () => {
@@ -68,9 +98,7 @@ describe('Kafka patterns', () => {
 		});
 
 		// Get producer, publish, then disconnect
-		const producer = await open(
-			connector.producer({ name: unique('producer') }),
-		);
+		const producer = await open(extras.producer({ name: unique('producer') }));
 
 		const result = await producer.send({
 			topic: testTopic,
@@ -101,9 +129,7 @@ describe('Kafka patterns', () => {
 		});
 
 		// Produce messages
-		const producer = await open(
-			connector.producer({ name: unique('producer') }),
-		);
+		const producer = await open(extras.producer({ name: unique('producer') }));
 		await producer.send({
 			topic: testTopic,
 			messages: [
@@ -116,7 +142,7 @@ describe('Kafka patterns', () => {
 
 		// Get consumer, subscribe, consume
 		const consumer = await open(
-			connector.consumer({
+			extras.consumer({
 				name: unique('consumer'),
 				groupId: `test-group-${Date.now()}`,
 			}),
@@ -158,9 +184,7 @@ describe('Kafka patterns', () => {
 		});
 
 		// Produce to both topics
-		const producer = await open(
-			connector.producer({ name: unique('producer') }),
-		);
+		const producer = await open(extras.producer({ name: unique('producer') }));
 		await producer.send({
 			topic: topic1,
 			messages: [
@@ -177,7 +201,7 @@ describe('Kafka patterns', () => {
 
 		// Get consumer, subscribe to both
 		const consumer = await open(
-			connector.consumer({
+			extras.consumer({
 				name: unique('consumer'),
 				groupId: `test-multi-group-${Date.now()}`,
 			}),
@@ -215,9 +239,7 @@ describe('Kafka patterns', () => {
 		});
 
 		// Produce a message
-		const producer = await open(
-			connector.producer({ name: unique('producer') }),
-		);
+		const producer = await open(extras.producer({ name: unique('producer') }));
 		await producer.send({
 			topic: testTopic,
 			messages: [
@@ -232,7 +254,7 @@ describe('Kafka patterns', () => {
 		// Consumer that fails on first attempt, succeeds on second
 		let attempt_count = 0;
 		const consumer = await open(
-			connector.consumer({
+			extras.consumer({
 				name: unique('consumer'),
 				groupId: `test-retry-group-${Date.now()}`,
 				retry: { retries: 3 },
@@ -283,9 +305,7 @@ describe('Kafka patterns', () => {
 		});
 
 		// Produce: 1 good message, 1 bad (will fail processing), 1 good
-		const producer = await open(
-			connector.producer({ name: unique('producer') }),
-		);
+		const producer = await open(extras.producer({ name: unique('producer') }));
 		await producer.send({
 			topic: sourceTopic,
 			messages: [
@@ -297,7 +317,7 @@ describe('Kafka patterns', () => {
 
 		// Consumer with DLQ pattern: catch errors, forward to DLQ, don't rethrow
 		const consumer = await open(
-			connector.consumer({
+			extras.consumer({
 				name: unique('consumer'),
 				groupId: `test-dlq-group-${Date.now()}`,
 			}),
@@ -348,7 +368,7 @@ describe('Kafka patterns', () => {
 
 		// Now consume from the DLQ topic to verify the failed message arrived
 		const dlqConsumer = await open(
-			connector.consumer({
+			extras.consumer({
 				name: unique('consumer'),
 				groupId: `test-dlq-reader-${Date.now()}`,
 			}),
@@ -388,9 +408,7 @@ describe('Kafka patterns', () => {
 		});
 
 		// Produce messages
-		const producer = await open(
-			connector.producer({ name: unique('producer') }),
-		);
+		const producer = await open(extras.producer({ name: unique('producer') }));
 		await producer.send({
 			topic: testTopic,
 			messages: [
@@ -403,7 +421,7 @@ describe('Kafka patterns', () => {
 
 		// Consumer with autoCommit OFF — manually commit after processing
 		const consumer = await open(
-			connector.consumer({
+			extras.consumer({
 				name: unique('consumer'),
 				groupId: `test-manual-commit-group-${Date.now()}`,
 			}),
@@ -457,9 +475,7 @@ describe('Kafka patterns', () => {
 		});
 
 		// Produce 5 messages
-		const producer = await open(
-			connector.producer({ name: unique('producer') }),
-		);
+		const producer = await open(extras.producer({ name: unique('producer') }));
 		await producer.send({
 			topic: testTopic,
 			messages: Array.from({ length: 5 }, (_, i) => ({
@@ -471,7 +487,7 @@ describe('Kafka patterns', () => {
 
 		// Consumer with eachBatch instead of eachMessage
 		const consumer = await open(
-			connector.consumer({
+			extras.consumer({
 				name: unique('consumer'),
 				groupId: `test-batch-group-${Date.now()}`,
 			}),

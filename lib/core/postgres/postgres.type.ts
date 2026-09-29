@@ -1,6 +1,10 @@
 // lib/core/postgres/postgres.type.ts
 
-import type { LinkOptions } from '@shared/shared.type';
+import type {
+	ConnectorOptions,
+	LinkEventMap,
+	LinkOptions,
+} from '@shared/shared.type';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import type { Sql } from 'postgres';
 
@@ -13,7 +17,7 @@ export type PostgresSchema = Record<string, unknown>;
  * `host` is required.
  */
 export type PostgresConfig<TSchema extends PostgresSchema = PostgresSchema> =
-	LinkOptions & {
+	ConnectorOptions & {
 		url?: string;
 		host?: string;
 		port?: number;
@@ -41,14 +45,16 @@ export type PostgresConfig<TSchema extends PostgresSchema = PostgresSchema> =
 		closeTimeout?: number;
 		/** Raw server settings (GUCs); `application_name` comes from `appName`. */
 		connection?: Record<string, string | number | boolean>;
+		/** LISTENs, each on its own connection — connected once this is ready. */
+		listeners?: PostgresListenerOptions[];
 	};
 
 /** The drizzle database a Postgres connector hands out, with its postgres.js client. */
 export type PostgresDatabase<TSchema extends PostgresSchema = PostgresSchema> =
 	PostgresJsDatabase<TSchema> & { $client: Sql };
 
-export type PostgresListenOptions = LinkOptions & {
-	channel: string;
-	/** A NOTIFY payload — parsed JSON when it parses, else the raw string. */
-	onMessage: (payload: unknown) => void;
-};
+/** A LISTEN on one channel, over its own connection. Messages: its `message` event. */
+export type PostgresListenerOptions = LinkOptions & { channel: string };
+
+/** A NOTIFY payload — parsed JSON when it parses, else the raw string. */
+export type PostgresListenerEvents = LinkEventMap & { message: unknown };

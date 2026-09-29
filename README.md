@@ -48,33 +48,56 @@ server + database number, a Mongo cluster, a Kafka cluster. Another target →
 another connector.
 
 A **link** is anything holding a live connection: every connector, and every
-extra connection it opens — a Postgres listener, a Redis subscriber, a Kafka
-producer or consumer. Extra connections are created **through their
-connector**, so they're tracked, health-checked and closed with it:
+extra connection of one — a Postgres listener, a Redis subscriber, a Kafka
+producer or consumer. Extra connections are **declared in their connector's
+config**: created with it, connected once it's ready, closed with it.
 
 ```ts
-const kafka = new KafkaConnector({ name: 'main', brokers: process.env.KAFKA_BOOTSTRAP_SERVERS! });
-await kafka.connect();
+const kafka = new KafkaConnector({
+  name: 'kafka',
+  brokers: process.env.KAFKA_BOOTSTRAP_SERVERS!,
+  recover: { every: 30_000 },
+  producers: [{ name: 'notifier' }],
+  consumers: [{ name: 'notifications', groupId: 'notify' }],
+});
 
-const producer = kafka.producer({ name: 'notifier' });
-await producer.connect();
-await producer.getInstance().send({ topic, messages });   // raw kafkajs Producer
+const consumer = kafka.consumers.get('notifications');
+consumer.on('connect', {
+  name: 'subscribe',
+  handler: async () => {
+    await consumer.getInstance().subscribe({ topic });
+    await consumer.getInstance().run({ eachMessage });
+  },
+});
 
-kafka.getInstance();   // raw kafkajs Kafka, for anything not wrapped
+await kafka.connect();          // connects the producer and consumer too
+
+const producer = kafka.producers.get('notifier');
+if (producer.state === 'ready') {
+  await producer.getInstance().send({ topic, messages });   // raw kafkajs Producer
+}
+kafka.getInstance();            // raw kafkajs Kafka, for anything not wrapped
 ```
+
+**The driver owns reconnecting.** postgres.js opens new pool connections,
+glide and the Mongo driver reconnect, kafkajs reconnects and restarts crashed
+consumers. A link creates its driver object once, reports state, and gates
+health — it never destroys a driver object to "recover" it.
 
 ### Every link
 
 ```ts
-link.name                 // required; unique within its connector
-link.state                // 'idle' | 'connecting' | 'ready' | 'failed' | 'closed'
-link.connect()            // idempotent; a close() mid-connect wins
-link.close()              // closes its extra connections first, then itself
-link.ping()               // one raw check → Result; never throws
-link.health({ trial? })   // reconnect + time-limited, retried ping + breaker → Result; never throws
-link.getInstance()        // raw driver object (see below)
-link.circuit              // 'closed' | 'open' | 'half-open'
-link.breaker              // CircuitBreaker from @rniverse/utils/resilience
+link.name                     // required; unique within its connector
+link.state                    // 'idle' | 'connecting' | 'ready' | 'failed' | 'closed'
+link.connect()                // creates + connects the driver object; a no-op once there is one
+link.close()                  // closes its extra connections first, then itself
+link.ping()                   // one raw check → Result; never throws
+link.health({ trial? })       // time-limited, retried ping + breaker → Result; never throws
+link.getInstance()            // raw driver object (see below)
+link.on(type, { name, handler })   // named listener
+link.off(type, { name })
+link.circuit                  // 'closed' | 'open' | 'half-open'
+link.breaker                  // CircuitBreaker from @rniverse/utils/resilience
 ```
 
 **State**
@@ -82,68 +105,89 @@ link.breaker              // CircuitBreaker from @rniverse/utils/resilience
 | State | Means |
 |---|---|
 | `idle` | created, never connected |
-| `connecting` | connecting or reconnecting; a Kafka consumer also sits here until it joins its group |
+| `connecting` | connect in progress, or the driver is reconnecting (a kafkajs consumer restart) |
 | `ready` | connected and able to do its job |
-| `failed` | connect or health check failed, the driver reported a failure, or a breaker released the connection |
-| `closed` | the owner called `close()` — never the breaker's doing |
+| `failed` | connect or health check failed, the driver reported a failure, the circuit opened, or its connector failed |
+| `closed` | the owner called `close()` |
 
 Kafka producers / consumers and Mongo report changes live (driver events).
 Postgres and Redis have no connection events: their state is "as of the last
 `connect()` / `ping()` / `health()`" — call `health()` for current truth.
 
-**Events** — `on: { connect, fail, close }` in any link's options:
+**Events** — named listeners, called in registration order with the payload:
 
-```ts
-const consumer = kafka.consumer({
-  name: 'notifications',
-  groupId: 'notify',
-  on: {
-    connect: () => log.info('joined — receiving'),          // ready: first time, or after a reconnect
-    fail: ({ error }) => log.warn({ error }, 'consumer failed'),
-  },
-});
-```
+| Event | Fires when | Payload |
+|---|---|---|
+| `connect` | a **new driver object** connected — set it up here (e.g. subscribe) | `{ name }` |
+| `recover` | back to `ready` on the **same** object (circuit closed, kafkajs restart done, heartbeat back) | `{ name }` |
+| `fail` | → `failed` | `{ name, error }` |
+| `close` | → `closed` (the owner's close) | `{ name }` |
+| `message` | Postgres listener / Redis subscriber only — each message | see below |
 
-Every breaker change already shows up as one of these (opening releases the
-connection → `fail`; the trial reconnecting → `connect` or `fail`). A handler
-that throws never breaks the link.
+A second listener with the same name for the same event throws
+`DUPLICATE_NAME`. A listener that throws or rejects is logged by name and never
+breaks the link or the listeners after it. `on('connect', …)` on a link that's
+already `ready` runs the handler once, right away — registration order never
+loses a connect.
 
 **`getInstance()`** works as soon as the driver object exists — once
 `connect()` has resolved — **whatever the state**. It throws `LinkError`
 `NOT_READY` only when there's no object (before the first `connect()`, after
-`close()`, after a breaker released the connection). That's what lets a Kafka
-consumer call `subscribe()` + `run()` before it's `ready`.
+`close()`).
 
-**Health check** — each `health()`: reconnect if needed (a no-op while
-connected), ping with a time limit, retry, and count **failed checks** (not
-pings) against the breaker. After `threshold` failed checks the circuit opens:
-the connection is released (`failed`), extra connections too, and `health()`
-fails fast (`CircuitOpenError`) until `cooldown` passes. The next `health()` is
-the trial — it reconnects; success closes the circuit. **A connector recovers on
-its own; nothing else has to call `connect()`.**
+**Health check** — each `health()`: connect if there's no driver object yet,
+ping with a time limit, retry, and count **failed checks** (not pings) against
+the breaker. After `threshold` failed checks the circuit opens: the link goes
+`failed` and `health()` fails fast (`CircuitOpenError`) until `cooldown` passes
+— **nothing is torn down**, the driver keeps reconnecting underneath. The next
+`health()` is the trial: a plain ping on the same object; success closes the
+circuit, `ready` again (`recover`). A connector whose check passes also
+connects its extras that have no driver object yet.
+
+**Recover timer** — `recover: { every }` on a connector (ms; env
+`RECOVER_EVERY_MS`; default off): from the first `connect()` until `close()`,
+each pass connects while there's no driver object (bounded by the driver's own
+connect timeout, not the health timeout), else runs `health()`. Passes never
+overlap. Without it, something must call `health()` for a down connector to be
+noticed back.
 
 **Manual control**
 
 | Owner wants to | Call |
 |---|---|
-| Take it out of service | `link.breaker.open({ ms })` — releases the connection → `failed` |
-| Put it back now | `link.breaker.reset()` — the next `health()` / `connect()` reconnects |
+| Take it out of service | `link.breaker.open({ ms })` — `failed` now; `health()` fails fast until `ms` passes |
+| Put it back now | `link.breaker.reset()` — the next `health()` pings and brings it back |
 | Test it now, skipping the cooldown | `link.health({ trial: true })` |
+| A fresh driver object | `link.close()` then `link.connect()` — `connect` fires again |
 | Inspect | `link.state`, `link.circuit`, `link.breaker.failures`, `link.breaker.remaining` |
 
-**Bringing a failed link back** — call `connect()` again on the same object: it
-drops the old driver object and opens a fresh one (same name, config, handlers).
-Or `close()` it (freeing the name) and create a new one with different config.
-When a connector's own breaker releases it, its extra connections go `failed`
-too (names kept); the owner reconnects them, e.g. from the connector's
-`connect` event.
+### Extra connections
+
+- **Declared in the connector's config**, created in its constructor. Adding
+  one at runtime isn't supported yet.
+- **Looked up by name** — `kafka.producers`, `kafka.consumers`,
+  `postgres.listeners`, `redis.subscribers` are read-only collections:
+  `get(name)` returns the link or throws `UNKNOWN_NAME`; `has()`, `size` and
+  iteration as on a `Map`. Names are unique across one connector's extras.
+- **Connected by their connector** when it connects, and when its `health()`
+  passes — each extra that has no driver object yet. One that has one is left
+  to its driver; a `closed` one is skipped (the owner closed it on purpose).
+- **An extra's `connect()` before its connector is `ready`** logs a warning
+  (`kafka/notifier: waiting — kafka is connecting`) and returns — no throw,
+  no wait; the connector connects it later.
+- **Their state follows the connector down and back — state only.** Connector
+  → `failed`: each `ready` / `connecting` extra → `failed` (`fail`), nothing
+  torn down. Connector `ready` again: each goes back to what it was (`recover`).
+  An extra's own driver report wins over that.
+- Extras use their connector's `health` settings unless given their own.
 
 **Errors** — `LinkError` with a stable `code`:
 
 | `code` | When |
 |---|---|
-| `DUPLICATE_NAME` | an extra connection's name is taken within its connector (a closed one frees it) |
-| `NOT_READY` | no driver object — `getInstance()` / `ping()` too early or after close; an extra connection's `connect()` before its connector's |
+| `DUPLICATE_NAME` | two extras of one connector share a name, or a listener name is taken for that event |
+| `UNKNOWN_NAME` | `get(name)` for a name not in the connector's config |
+| `NOT_READY` | no driver object — `getInstance()` / `ping()` before the first connect or after close |
 | `MISSING_APP_NAME` | neither `config.appName` nor `INSTANCE_NAME` is set |
 
 `error.link` and `error.connector` name the link.
@@ -161,6 +205,7 @@ Every setting: explicit option → env var → default.
 | Ping timeout | `health.timeout` | `HEALTH_TIMEOUT_MS` | 2000 ms |
 | Failed checks to open the circuit | `health.threshold` | `CIRCUIT_THRESHOLD` | 3 |
 | Circuit cooldown | `health.cooldown` | `CIRCUIT_COOLDOWN_MS` | 30000 ms |
+| Recover timer | `recover.every` | `RECOVER_EVERY_MS` | off |
 | Postgres close grace | `closeTimeout` | `SQL_CLOSE_TIMEOUT_S` | 5 s |
 
 Extra connections use their connector's `health` settings unless given their
@@ -181,15 +226,15 @@ new PostgresConnector<TSchema>({
   appName?: string,                   // application_name
   closeTimeout?: number,              // seconds
   connection?: Record<string, string | number | boolean>,   // raw server settings
-  health?, on?,
+  listeners?: { name: string, channel: string, health? }[],
+  health?, recover?,
 })
 ```
 
 | member | |
 |---|---|
 | `getInstance()` | drizzle db (typed by `schema`); `$client` is postgres.js |
-| `listen({ name, channel, onMessage })` | → `PostgresListener` on its own connection; payload parsed as JSON when it parses, else the raw string |
-| `listeners` | `ReadonlyMap<string, PostgresListener>` |
+| `listeners.get(name)` | → `PostgresListener`, LISTEN on its own connection; each NOTIFY is a `message` event — payload parsed as JSON when it parses, else the raw string |
 
 `ping()`: `SELECT 1`. A listener re-LISTENs by itself after a dropped
 connection (postgres.js) and goes `ready` again; postgres.js exposes no state
@@ -207,15 +252,15 @@ new RedisConnector({
   database?: number,                  // logical DB, default 0
   requestTimeout?: 10000, connectionTimeout?: 10000,   // ms
   appName?: string,                   // CLIENT SETNAME
-  health?, on?,
+  subscribers?: { name: string, channels?: string[], patterns?: string[], health? }[],
+  health?, recover?,
 })
 ```
 
 | member | |
 |---|---|
 | `getInstance()` | the glide `GlideClient` — use glide's API directly |
-| `subscriber({ name, channels?, patterns?, onMessage })` | → `RedisSubscriber` on its own client; `onMessage({ channel, pattern?, message })` |
-| `subscribers` | `ReadonlyMap<string, RedisSubscriber>` |
+| `subscribers.get(name)` | → `RedisSubscriber` on its own client; each message is a `message` event: `{ channel, pattern?, message }` |
 
 Standalone servers only. Glide fixes subscriptions when the client is created —
 changing channels means a new subscriber. `ping()`: `PING`.
@@ -230,7 +275,7 @@ new MongoConnector({
   appName?: string,
   options?: { maxPoolSize?: 10, minPoolSize?: 2, connectTimeoutMS?: 10000, socketTimeoutMS?: 45000,
               serverSelectionTimeoutMS?: 10000, retryWrites?: true, retryReads?: true },
-  health?, on?,
+  health?, recover?,
 })
 ```
 
@@ -240,7 +285,7 @@ new MongoConnector({
 | `db(name?)` | a `Db` on the same pool — default `database`, else the URL's |
 
 No extra connections. `ping()`: `admin().ping()`. State follows the driver's
-server heartbeats.
+server heartbeats (a failed one → `failed`, the next good one → `recover`).
 
 ## KafkaConnector — `/kafka`
 
@@ -253,7 +298,9 @@ new KafkaConnector({
   ssl?: boolean | { rejectUnauthorized?, ca?, cert?, key? },
   sasl?: { mechanism: 'plain' | 'scram-sha-256' | 'scram-sha-512', username, password },
   kafka?: Partial<KafkaConfig>,       // raw kafkajs settings, applied last
-  health?, on?,
+  producers?: { name: string, health?, ...ProducerConfig }[],
+  consumers?: { name: string, groupId: string, health?, ...ConsumerConfig }[],
+  health?, recover?,
 })
 ```
 
@@ -261,14 +308,18 @@ new KafkaConnector({
 |---|---|
 | `getInstance()` | the kafkajs `Kafka` |
 | `admin()` | the connector's own admin connection |
-| `producer({ name, ...ProducerConfig })` | → `KafkaProducer`; `ready` on connect |
-| `consumer({ name, groupId, ...ConsumerConfig })` | → `KafkaConsumer`; `ready` only after joining its group |
-| `producers`, `consumers` | `ReadonlyMap`s by name |
+| `producers.get(name)` | → `KafkaProducer`; `ready` on connect |
+| `consumers.get(name)` | → `KafkaConsumer`; `ready` on connect — subscribe + run in its `connect` listener |
 
-A consumer is `connecting` from `connect()` until the owner's `subscribe()` +
-`run()` make it join its group; a rebalance takes it back to `connecting`; a
-crash or disconnect → `failed`. kafkajs keeps its own retries / timeouts
-underneath; `health.timeout` bounds our wait, not kafkajs's calls.
+**kafkajs owns consumer recovery.** After a crash it restarts the same consumer
+with its subscription and `run()` (its default `restartOnFailure`): the link
+goes `connecting`, then `ready` again on the next group join (`recover`) — no
+second `connect`, no re-subscribing. A crash kafkajs won't restart
+(non-retriable, or `restartOnFailure` said no) → `failed`, and it stays failed:
+the owner decides (`close()` + `connect()` for a fresh consumer). kafkajs
+disconnects before reporting a crash, so a `DISCONNECT` alone is `connecting`;
+stop a consumer with `close()`, not the raw `disconnect()`. A rebalance is
+logged, not a state. `health.timeout` bounds our wait, not kafkajs's calls.
 
 ---
 

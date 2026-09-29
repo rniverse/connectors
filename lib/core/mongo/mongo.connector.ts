@@ -1,7 +1,7 @@
 // lib/core/mongo/mongo.connector.ts
 
 import type { Result } from '@rniverse/utils/result';
-import { Link } from '@shared/link';
+import { Connector } from '@shared/link';
 import { appName } from '@shared/setting';
 import { type Db, MongoClient, type MongoClientOptions } from 'mongodb';
 import { options } from './mongo.helper';
@@ -12,9 +12,9 @@ import type { MongoConfig } from './mongo.type';
  * the same pool via `db(name)`; no extra connections to track.
  *
  * State also follows the driver's server heartbeats: a failed heartbeat marks
- * it `failed`, the next successful one `ready` again.
+ * it `failed`, the next successful one `ready` again (`recover`).
  */
-export class MongoConnector extends Link<MongoClient> {
+export class MongoConnector extends Connector<MongoClient> {
 	private readonly url: string;
 	private readonly database: string | undefined;
 	private readonly settings: MongoClientOptions;

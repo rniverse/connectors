@@ -1,7 +1,9 @@
 # connectors rewrite — plan
 
 Status: **built** (steps 1–6 of §12). Where the build differed from the plan,
-it's noted inline as **Built:**.
+it's noted inline as **Built:**. **Revision 2 (§14) is built** — listeners,
+extras declared in config, automatic extra connects, drivers owning recovery.
+What it replaces is marked inline as **Revised (§14):**.
 
 ## 1. Summary
 
@@ -23,7 +25,7 @@ manual control. Code is grouped per connector.
 | D2 | **A link is anything holding a live connection** — every connector, and every extra connection it opens (Kafka producer / consumer, Redis subscriber, Postgres listener). |
 | D3 | **Extra connections are created through their connector** (`kafka.producer(...)`), never through the raw driver object — so they're tracked, health-checked, and closed with the connector. `getInstance()` still returns the raw driver object for anything we don't wrap. |
 | D4 | **Each link has its own state, health check and breaker.** A crashed consumer fails alone; its Kafka connector stays `ready`. |
-| D5 | **The owner recreates.** A connector never rebuilds an extra connection by itself; the owner hears every change through events and decides (§3.8). |
+| D5 | **The owner recreates.** A connector never rebuilds an extra connection by itself; the owner hears every change through events and decides (§3.8). **Revised (§14):** a connector connects its declared extras itself; after that, each driver reconnects on its own — nobody recreates. |
 | D6 | **Names by protocol:** `PostgresConnector` (was `SQLConnector`), `RedisConnector` (Valkey too), `MongoConnector` (was `MongoDBConnector`), `KafkaConnector` (was `RedpandaConnector` — Redpanda speaks Kafka). |
 | D7 | **Redis exposes glide directly.** `GlideClientAdapter` is removed. Standalone `GlideClient` only; cluster mode is out of scope. |
 | D8 | **Postgres `listen` and Redis `subscriber` are built now.** |
@@ -70,6 +72,9 @@ type LinkEvents = {
 };
 ```
 
+**Revised (§14):** events become named listeners — `link.on(type, { name,
+handler })` — and the `on` option is removed.
+
 No separate breaker event: every breaker change already appears as a state
 change — opening releases the connection (`failed` → `fail`); the trial
 reconnects (`connecting`, then `ready` → `connect`, or `failed` → `fail`). The
@@ -113,7 +118,8 @@ own.
 
 As built in the current release, moved here from `tools/`: each `health()`
 reconnects (a no-op while connected), pings with a time limit, retries, and
-counts **failed checks** (not pings) against the breaker. Opening the breaker
+counts **failed checks** (not pings) against the breaker. **Revised (§14):**
+opening no longer releases anything (R6–R8). Built: opening the breaker
 releases the connection; after the cooldown the next `health()` is the trial and
 reconnects on its own. `health({ trial: true })` runs the trial now.
 
@@ -159,6 +165,9 @@ the owner calls `subscribe()` + `run()` on `getInstance()`.
 
 ### 3.8 Bringing a failed link back
 
+**Revised (§14):** the driver brings it back; `connect()` no longer drops and
+reopens (R8). Below is the built behaviour.
+
 - **Usually: call `connect()` again on the same object.** It opens a fresh driver
   connection — same name, config, handlers, still in its connector's map.
   **Built:** if the link still holds its old driver object (the driver reported
@@ -180,6 +189,9 @@ Every connector:
   fires `fail`) — applies to Postgres, Redis and Kafka; Mongo has no extras;
 - an extra's `connect()` needs its connector's driver object — before the
   connector has connected it throws `NOT_READY`.
+- **Revised (§14):** extras are declared in the connector's config, connect
+  automatically when the connector does, and an early `connect()` logs a
+  warning instead of throwing.
 
 ## 4. Layout
 
@@ -334,6 +346,8 @@ class KafkaConsumer extends Link<Consumer> {}
 - Connector `ping()`: `admin.listTopics()`.
 - Producer: `ready` on `CONNECT`, `failed` on `DISCONNECT`; `ping()` =
   `state === 'ready'`.
+- **Revised (§14): consumer `ready` = `consumer.connect()` resolved**; the
+  paragraph below is the built behaviour it replaces.
 - **Consumer: `ready` only after joining its group** (`GROUP_JOIN`) — when it can
   actually receive messages, i.e. after the owner's `subscribe()` + `run()`.
   Between `connect()` and joining it's `connecting`; `REBALANCING` → back to
@@ -403,6 +417,194 @@ starts. Work on one branch in connectors; nothing is published until step 7.
 ## 13. Out of scope
 
 - Redis cluster mode (`GlideClusterClient`).
-- Recreating extra connections automatically (the owner does it, §3.8).
+- ~~Recreating extra connections automatically (the owner does it, §3.8).~~
+  **Revised (§14):** still out — drivers reconnect; a connector only makes the first connect of its declared extras.
 - Wrapping driver APIs beyond connection lifecycle (queries, commands, publish
   stay on `getInstance()`).
+
+## 14. Revision 2 — listeners, declared extras, drivers own recovery
+
+Status: **built** (connectors; §14.7 step 3 — publish + migration — follows).
+Deviations noted inline as **Built:**. Came out of running notify against Aiven:
+extras had to be created, connected and re-connected by hand (notify's
+`setup$kafka`); a consumer's `connect` event fired too late to subscribe on;
+an open circuit tore down driver objects that were already reconnecting by
+themselves; and nothing re-checked a dead connector unless something called
+`health()`.
+
+The principle: **drivers own reconnecting.** postgres.js opens new pool
+connections, glide and the Mongo driver reconnect, kafkajs reconnects and
+restarts crashed consumers. A link creates its driver object once, reports
+state, and gates health — it never destroys a driver object to "recover" it.
+
+### 14.1 Decisions
+
+**Listeners**
+
+| # | Decision |
+|---|---|
+| R1 | **Named listeners replace the `on` option.** `link.on(type, { name, handler })`, `link.off(type, { name })`. One array per event type; on the event each is called in order with the payload. |
+| R2 | **A listener name is unique per link and event type** — a second `on()` with the same name throws `LinkError` `DUPLICATE_NAME` (a silent replace would hide a double registration, e.g. subscribing twice). |
+| R3 | **A throwing / rejecting listener is caught and logged** with its name (`kafka/notifications: listener 'subscribe' (connect) failed`); it never breaks the link or the listeners after it. |
+| R4 | **`on('connect', …)` on a link that is already `ready` runs the handler once, right away** — registration order never loses a connect. |
+| R5 | **`connect` fires only when a new driver object connects** — the first connect, or a reopen after the owner's `close()`. It means "new instance — set it up" (e.g. `subscribe()` + `run()`). A link going back to `ready` on the same object (circuit closed, kafkajs restart done, Mongo heartbeat) fires **`recover`** instead. Events: `connect`, `recover`, `fail`, `close` (+ `message`, R14). |
+
+**Circuit breaker**
+
+| # | Decision |
+|---|---|
+| R6 | **An open circuit destroys nothing.** Opening: the link → `failed` (`fail` fires); `health()` fails fast until the cooldown ends. The driver object and every extra stay as they are — the driver keeps reconnecting underneath. |
+| R7 | **The trial is a plain ping on the same object.** Passes → circuit closed, link `ready`, `recover` fires. `health({ trial: true })` and `breaker.open({ ms })` / `reset()` keep working — `open({ ms })` now just marks the link out of service. |
+| R8 | **Removed:** the breaker's release, `connect()`'s drop-and-reopen of a failed link holding an old object, and a connector's breaker releasing its extras. `connect()` creates a driver object only when the link has none (first connect, or after `close()`); otherwise it's a no-op. An owner wanting a fresh object calls `close()` then `connect()`. |
+| R9 | Trade-off, accepted: while a circuit is open `getInstance()` still returns the object, so a query waits for the driver's own timeouts instead of failing fast with `NOT_READY`. Callers that care check `state` first. |
+
+**Extras**
+
+| # | Decision |
+|---|---|
+| R10 | **Extras are declared in the connector's config** and created in its constructor; no handlers in config — the owner attaches listeners (R1). The factory methods (`producer()`, `consumer()`, `listen()`, `subscriber()`) are removed. Adding an extra at runtime is **deferred** (wanted later). |
+| R11 | **The connector connects its extras** when it connects (**Built:** a direct call from the connector's state change, not an internal named listener — nothing an owner could `off()` by accident), and whenever its `health()` passes — each extra that **has no driver object yet** (never connected, or its first connect failed). An extra that has one is left to its driver; a `closed` one is skipped. |
+| R12 | **An extra's `connect()` before its connector is `ready` logs a warning and returns** without connecting, naming the connector's state (`kafka/notifier: waiting — kafka is connecting`). It doesn't throw and doesn't wait; R11 connects it later. |
+| R13 | **Lookups by name throw instead of returning `undefined`.** `kafka.producers`, `kafka.consumers`, `postgres.listeners`, `redis.subscribers` are read-only collections: `get(name)` returns the link or throws `LinkError` `UNKNOWN_NAME` (a name not in the config); `has()`, `size`, iteration as on a `Map`. |
+| R14 | **Redis subscriber / Postgres listener messages are a `message` event** — `subscriber.on('message', { name, handler })` — same reason as R10. Payloads unchanged (Postgres: parsed JSON else string; Redis: `{ channel, pattern?, message }`). |
+
+| R18 | **An extra's state follows its connector down and back — state only.** Connector → `failed`: each `ready` / `connecting` extra → `failed` (`fail` fires, nothing torn down) — e.g. kafkajs sends no producer event on broker loss, so without this `producer.state` stays `ready` and a publish waits out kafkajs's retries. Connector → `ready` again (`recover`): each extra it took down goes back to the state it had (`recover` fires for `ready`). |
+
+**Kafka**
+
+| # | Decision |
+|---|---|
+| R15 | **Consumer `ready` = `consumer.connect()` resolved** (like the producer); `connect` fires then (R5) and the owner does `subscribe()` + `run()` in its listener — exactly once per consumer object. |
+| R16 | **kafkajs owns consumer recovery; we never restart a consumer.** Its default `restartOnFailure` is kept. `CRASH` with `restart: true` → `connecting`; the next `GROUP_JOIN` → `ready` (`recover`). `CRASH` with `restart: false` (non-retriable — auth, authorization) → `failed`, and it stays failed: a restart wouldn't help, the owner decides. `REBALANCING` is logged, not a state. **Built:** kafkajs disconnects *before* emitting `CRASH`, so `DISCONNECT` alone maps to `connecting`, not `failed` — the `CRASH` that follows decides; otherwise every restart would fire a spurious `fail`. Stop a consumer with `close()`, not the raw `disconnect()`. |
+
+**Recovery timer**
+
+| # | Decision |
+|---|---|
+| R17 | **Optional `recover: { every }`** (ms) on a connector. Each pass: no driver object yet → `connect()` (bounded by the driver's own connection timeout, not the 2 s health timeout — a slow first connect, ~4 s against Aiven, isn't reported as failed health checks); otherwise `health()` (which also connects never-connected extras, R11). Starts at the first `connect()`, stops on `close()`; passes never overlap; `unref`'d. Option → env `RECOVER_EVERY_MS` → default **off**. |
+
+### 14.2 Surface
+
+```ts
+type LinkEventMap = {
+  connect: { name: string };                   // a new driver object connected
+  recover: { name: string };                   // back to ready, same object
+  fail: { name: string; error: unknown };
+  close: { name: string };
+};
+
+abstract class Link<Instance, Events extends LinkEventMap = LinkEventMap> {
+  on<T extends keyof Events>(type: T, listener: {
+    name: string;
+    handler: (event: Events[T]) => unknown;
+  }): void;
+  off<T extends keyof Events>(type: T, options: { name: string }): void;
+  // …everything else as §3.3, minus the `on` option
+}
+
+type LinkOptions = { name: string; health?: HealthOptions };
+type ConnectorOptions = LinkOptions & { recover?: { every?: number } };
+
+/** Read-only, by name. get() throws UNKNOWN_NAME. */
+interface Links<T> extends Iterable<T> {
+  get(name: string): T;
+  has(name: string): boolean;
+  readonly size: number;
+}
+
+type KafkaConfig = ConnectorOptions & {
+  brokers: string | string[];
+  // …as §8
+  producers?: (LinkOptions & Partial<ProducerConfig>)[];
+  consumers?: (LinkOptions & ConsumerConfig)[];
+};
+type PostgresConfig = ConnectorOptions & {
+  // …as §5
+  listeners?: (LinkOptions & { channel: string })[];
+};
+type RedisConfig = ConnectorOptions & {
+  // …as §6
+  subscribers?: (LinkOptions & { channels?: string[]; patterns?: string[] })[];
+};
+
+class PostgresListener extends Link<ListenMeta, LinkEventMap & { message: unknown }> {}
+class RedisSubscriber extends Link<GlideClient, LinkEventMap & {
+  message: { channel: string; pattern?: string; message: string };
+}> {}
+```
+
+`LinkErrorCode` gains `UNKNOWN_NAME`.
+
+### 14.3 What an owner writes (notify)
+
+```ts
+// connections/kafka.connection.ts
+export const kafka = new KafkaConnector({
+  name: 'kafka', appName, brokers, ssl, sasl,
+  recover: { every: 30_000 },
+  producers: [{ name: 'notifier' }],
+  consumers: [{ name: 'notifications', groupId }],
+});
+
+// consumers/index.ts
+const consumer = kafka.consumers.get('notifications');
+consumer.on('connect', {
+  name: 'subscribe',
+  handler: async () => {
+    const instance = consumer.getInstance();
+    await instance.subscribe({ topic });
+    await instance.run({ eachMessage });
+  },
+});
+
+// services/notification/publish.ts
+const producer = kafka.producers.get('notifier');
+if (producer.state !== 'ready') { /* pending row */ }
+```
+
+No supervisor, no manual `connect()` of extras, no re-subscribing.
+
+### 14.4 `@rniverse/shared` registry
+
+- **Optional connections connect in the background** — `init()` starts their
+  `connect()` without awaiting, logs a failure as a warning. Required ones are
+  awaited as today (failure still exits). "Optional never blocks boot" is the
+  registry's rule, not each service's.
+- **`init()` no longer runs a health check** and returns `void` (neither aham
+  nor notify reads its result). Health runs only on demand (`/api/health`).
+
+### 14.5 Migration
+
+| Repo | Change |
+|---|---|
+| notify | Kafka as §14.3; `recover.every` from `KAFKA_RECOVER_EVERY`; the registry lists the real `kafka` connector (`required: false`) — the no-op-connect adapter and `connections/setup/kafka.setup.ts` are removed |
+| aham | dependency bump only (Postgres, no extras) |
+
+### 14.6 Tests
+
+- `test/shared/` — listeners: order, payload, `DUPLICATE_NAME`, `off`, a
+  throwing / rejecting listener isolated and logged, R4 replay; `connect` vs
+  `recover` (R5); circuit open keeps the object and extras, fails health fast,
+  trial ping recovers (R6–R8); extras: connect with the connector, `closed`
+  skipped, early `connect()` warns without throwing or connecting, `health()`
+  connecting a never-connected extra; `UNKNOWN_NAME`; `recover.every` (connect
+  when no object, health otherwise, no overlap, stops on `close()`).
+- `test/kafka/` — consumer `ready` on connect; owner subscribes in `connect`
+  and receives a message; broker restart → consumer `connecting` → `ready`
+  (`recover`) with no re-subscribe, message still received; producer connects
+  with the connector.
+- `test/postgres/`, `test/redis/` — `message` event delivers; declared
+  listener / subscriber connect with the connector.
+- shared — registry: optional connect doesn't block `init()`, required still
+  awaited, `init()` runs no health check.
+- notify — the Docker smoke scenarios from its spec §8 (broker down at boot,
+  later up, restarted mid-run, SIGINT).
+
+### 14.7 Build order
+
+1. connectors `lib/shared/` — listeners + events (R1–R5), breaker without
+   teardown (R6–R9), extras (R10–R13), recovery timer (R17); tests.
+2. Kafka (R15, R16), Postgres + Redis (R14), Mongo (`recover` from heartbeat);
+   tests; README.
+3. Publish connectors; publish shared (§14.4); migrate notify (§14.5), bump
+   aham; smoke tests; refresh the graph.

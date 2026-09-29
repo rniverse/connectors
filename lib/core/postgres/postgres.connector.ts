@@ -1,7 +1,7 @@
 // lib/core/postgres/postgres.connector.ts
 
 import type { Result } from '@rniverse/utils/result';
-import { Connector } from '@shared/link';
+import { Connector, type Links } from '@shared/link';
 import { appName, setting } from '@shared/setting';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { client } from './postgres.helper';
@@ -9,13 +9,12 @@ import { PostgresListener } from './postgres.listener';
 import type {
 	PostgresConfig,
 	PostgresDatabase,
-	PostgresListenOptions,
 	PostgresSchema,
 } from './postgres.type';
 
 /**
  * One Postgres database: a postgres.js pool behind a drizzle db. Another
- * database = another connector. Extra connections: `listen()`.
+ * database = another connector. Extra connections: `listeners` (config).
  */
 export class PostgresConnector<
 	TSchema extends PostgresSchema = PostgresSchema,
@@ -34,21 +33,19 @@ export class PostgresConnector<
 			min: 0,
 			fallback: 5,
 		});
+		for (const { channel, ...link } of config.listeners ?? []) {
+			this.__adopt(
+				new PostgresListener({
+					...this.__child(link),
+					database: this as PostgresConnector,
+					channel,
+				}),
+			);
+		}
 	}
 
-	/** LISTEN on `channel` over its own connection. */
-	listen(options: PostgresListenOptions): PostgresListener {
-		const { channel, onMessage, ...link } = options;
-		return new PostgresListener({
-			...this.__child(link),
-			parent: this,
-			channel,
-			onMessage,
-		});
-	}
-
-	get listeners(): ReadonlyMap<string, PostgresListener> {
-		return this.scope.of({ kind: PostgresListener });
+	get listeners(): Links<PostgresListener> {
+		return this.__of({ kind: PostgresListener });
 	}
 
 	protected async __open(): Promise<PostgresDatabase<TSchema>> {

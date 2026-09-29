@@ -1,54 +1,54 @@
 // lib/core/kafka/kafka.consumer.ts
 
+import { log } from '@rniverse/utils/logger';
 import type { Result } from '@rniverse/utils/result';
 import { Link, type LinkInit } from '@shared/link';
-import type { LinkState } from '@shared/shared.type';
 import type { Consumer, ConsumerConfig } from 'kafkajs';
 import type { KafkaConnector } from './kafka.connector';
 
 /**
- * A kafkajs consumer. `ready` only once it has joined its group — the point it
- * can actually receive messages, i.e. after the owner's `subscribe()` +
- * `run()` on `getInstance()`. Until then (and during a rebalance) it's
- * `connecting`; a crash or disconnect makes it `failed`.
+ * A kafkajs consumer. `ready` once `consumer.connect()` resolves — `connect`
+ * fires then, and the owner does `subscribe()` + `run()` in its listener,
+ * once per consumer object.
  *
- * After a reconnect, the owner re-does `subscribe()` + `run()` on the
- * consumer's `connect` event.
+ * kafkajs owns recovery: after a crash it restarts the same consumer (with its
+ * subscription and `run()`), so this goes `connecting` and back to `ready`
+ * (`recover`) on the next group join. A crash kafkajs won't restart is
+ * `failed` — and stays so; the owner decides (`close()` + `connect()` for a
+ * fresh consumer).
+ *
+ * kafkajs disconnects before it reports a crash, so a `DISCONNECT` alone only
+ * means "not connected" (`connecting`) — the `CRASH` that follows decides.
+ * Stop a consumer with `close()`, not the raw `disconnect()`.
  */
 export class KafkaConsumer extends Link<Consumer> {
-	private readonly parent: KafkaConnector;
+	private readonly cluster: KafkaConnector;
 	private readonly settings: ConsumerConfig;
 
 	constructor(
-		init: LinkInit & { parent: KafkaConnector; settings: ConsumerConfig },
+		init: LinkInit & { cluster: KafkaConnector; settings: ConsumerConfig },
 	) {
 		super(init);
-		this.parent = init.parent;
+		this.cluster = init.cluster;
 		this.settings = init.settings;
-	}
-
-	protected override __settled(): LinkState {
-		return 'connecting';
 	}
 
 	protected async __open(): Promise<Consumer> {
 		const epoch = this.__epoch();
-		const consumer = this.parent.getInstance().consumer(this.settings);
-		const { GROUP_JOIN, REBALANCING, CRASH, DISCONNECT, STOP } =
-			consumer.events;
-		consumer.on(GROUP_JOIN, () => this.__mark({ state: 'ready', epoch }));
-		consumer.on(REBALANCING, () => this.__mark({ state: 'connecting', epoch }));
-		consumer.on(STOP, () => this.__mark({ state: 'connecting', epoch }));
-		consumer.on(CRASH, (event) =>
-			this.__mark({ state: 'failed', epoch, error: event.payload.error }),
-		);
-		consumer.on(DISCONNECT, () =>
-			this.__mark({
-				state: 'failed',
-				epoch,
-				error: new Error(`${this.label}: disconnected`),
-			}),
-		);
+		const consumer = this.cluster.getInstance().consumer(this.settings);
+		const { GROUP_JOIN, REBALANCING, CRASH, DISCONNECT } = consumer.events;
+		consumer.on(CRASH, (event) => {
+			const { error, restart } = event.payload;
+			if (restart)
+				log.warn({ err: error }, `${this.label}: kafkajs restarting`);
+			this.__mark({ state: restart ? 'connecting' : 'failed', epoch, error });
+		});
+		consumer.on(GROUP_JOIN, () => {
+			// Only a restart's join changes state; the first join finds it ready.
+			if (this.state === 'connecting') this.__mark({ state: 'ready', epoch });
+		});
+		consumer.on(REBALANCING, () => log.info(`${this.label}: rebalancing`));
+		consumer.on(DISCONNECT, () => this.__mark({ state: 'connecting', epoch }));
 		await consumer.connect();
 		return consumer;
 	}
