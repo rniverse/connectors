@@ -34,11 +34,9 @@ export class KafkaConsumer extends Link {
                 log.warn({ err: error }, `${this.label}: kafkajs restarting`);
             this.__mark({ state: restart ? 'connecting' : 'failed', epoch, error });
         });
-        consumer.on(GROUP_JOIN, () => {
-            // Only a restart's join changes state; the first join finds it ready.
-            if (this.state === 'connecting')
-                this.__mark({ state: 'ready', epoch });
-        });
+        // A restart's join brings it back — even while its connector is down
+        // (the driver's report wins); the first join finds it ready already.
+        consumer.on(GROUP_JOIN, () => this.__mark({ state: 'ready', epoch }));
         consumer.on(REBALANCING, () => log.info(`${this.label}: rebalancing`));
         consumer.on(DISCONNECT, () => this.__mark({ state: 'connecting', epoch }));
         await consumer.connect();
