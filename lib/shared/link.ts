@@ -6,109 +6,110 @@ import type { BreakerState, CircuitBreaker } from '@rniverse/utils/resilience';
 import type { Result } from '@rniverse/utils/result';
 import { LinkError } from './errors';
 import { HealthCheck } from './health';
+import { setting } from './setting';
 import type {
+	ConnectorOptions,
 	HealthCheckOptions,
 	HealthOptions,
-	LinkEvents,
+	LinkEventMap,
 	LinkOptions,
 	LinkState,
+	Listener,
 } from './shared.type';
+
+export type AnyLink = Link<any, any>;
+
+type Handler = (event: never) => unknown;
 
 /** What a link needs beyond the public `LinkOptions`. Internal. */
 export type LinkInit = LinkOptions & {
-	/** The owning connector's name; a connector is its own. */
-	connector?: string;
-	/** Where an extra connection registers its name. */
-	scope?: Scope;
+	/** The connector an extra connection belongs to. */
+	parent?: AnyLink;
 	/** Health settings inherited from the connector; `health` overrides them. */
 	defaults?: HealthOptions;
 };
 
 /**
- * A connector's registry of its extra connections. Names are unique within it;
- * a closed link leaves it (freeing the name), a failed one stays.
+ * A connector's extra connections of one kind, by name — read-only.
+ * `get()` throws `UNKNOWN_NAME` for a name that isn't in the config.
  */
-export class Scope {
-	private readonly links = new Map<string, Link<unknown>>();
-	readonly connector: string;
+export class Links<T extends AnyLink> implements Iterable<T> {
+	private readonly connector: string;
+	private readonly items: ReadonlyMap<string, T>;
 
-	constructor(options: { connector: string }) {
+	constructor(options: { connector: string; items: ReadonlyMap<string, T> }) {
 		this.connector = options.connector;
+		this.items = options.items;
 	}
 
-	add(options: { link: Link<unknown> }): void {
-		const { link } = options;
-		const held = this.links.get(link.name);
-		if (held && held !== link) {
+	get(name: string): T {
+		const link = this.items.get(name);
+		if (!link) {
 			throw new LinkError({
-				code: 'DUPLICATE_NAME',
-				link: link.name,
+				code: 'UNKNOWN_NAME',
+				link: name,
 				connector: this.connector,
-				message: `${this.connector}: a link named '${link.name}' already exists`,
+				message: `${this.connector}: no link named '${name}' in its config`,
 			});
 		}
-		this.links.set(link.name, link);
+		return link;
 	}
 
-	remove(options: { link: Link<unknown> }): void {
-		if (this.links.get(options.link.name) === options.link) {
-			this.links.delete(options.link.name);
-		}
+	has(name: string): boolean {
+		return this.items.has(name);
 	}
 
-	list(): Link<unknown>[] {
-		return [...this.links.values()];
+	get size(): number {
+		return this.items.size;
 	}
 
-	/** The registered links of one class, by name. */
-	of<T extends Link<unknown>>(options: {
-		kind: abstract new (...args: never[]) => T;
-	}): ReadonlyMap<string, T> {
-		const found = new Map<string, T>();
-		for (const [name, link] of this.links) {
-			if (link instanceof options.kind) found.set(name, link as T);
-		}
-		return found;
+	[Symbol.iterator](): Iterator<T> {
+		return this.items.values();
 	}
 }
 
 /**
  * Anything that holds a live connection — a connector, or an extra connection
- * a connector opened. Owns everything common: idempotent connect (a close()
- * mid-connect wins), state and events, the health check, circuit breaker and
- * trial. A concrete link only says how to open, shut and ping its driver.
+ * of one. Owns everything common: idempotent connect (a close() mid-connect
+ * wins), state, named listeners, the health check and circuit breaker. A
+ * concrete link only says how to open, shut and ping its driver.
+ *
+ * The driver owns reconnecting: a link creates its driver object once, reports
+ * state, and never destroys the object to recover it.
  */
-export abstract class Link<Instance> {
+export abstract class Link<
+	Instance,
+	Events extends LinkEventMap = LinkEventMap,
+> {
 	readonly name: string;
+	/** The connector's name; a connector is its own. */
 	readonly connector: string;
 	private current: LinkState = 'idle';
 	private instance: Instance | null = null;
-	// Bumped by close() / release: anything started under an older epoch — an
-	// in-flight connect, a stale driver event — is ignored.
+	// The driver object `connect` last fired for — a later `ready` on the same
+	// object fires `recover` instead.
+	private announced: Instance | null = null;
+	// Bumped by close(): anything started under an older epoch — an in-flight
+	// connect, a stale driver event — is ignored.
 	private epoch = 0;
 	private readonly connection = lazy(() => this.__connect());
-	// A failed link's old connection being dropped by connect() — shared by
-	// concurrent connect() calls so only one drop happens.
-	private reopening: Promise<void> | null = null;
 	private readonly checker: HealthCheck<unknown>;
-	private readonly on: LinkEvents;
-	// The connector scope this link is registered in (extra connections only).
-	private readonly registry: Scope | null;
+	private readonly handlers = new Map<string, Map<string, Handler>>();
+	private readonly upstream: AnyLink | null;
+	// The state this extra had when its connector failed and took it down —
+	// restored when the connector is ready again. Cleared by its own driver.
+	private held: LinkState | null = null;
 
 	constructor(init: LinkInit) {
 		this.name = init.name;
-		this.connector = init.connector ?? init.name;
-		this.on = init.on ?? {};
-		this.registry = init.scope ?? null;
-		this.registry?.add({ link: this });
+		this.upstream = init.parent ?? null;
+		this.connector = this.upstream?.name ?? init.name;
 		this.checker = new HealthCheck({
 			name: this.label,
 			target: {
-				// The existing connection, or a first one — a health check never
-				// throws away a working driver object; only the breaker releases.
 				connect: () => this.connection.get(),
 				ping: () => this.ping(),
-				release: (options) => this.__release(options),
+				trip: (options) => this.__state({ state: 'failed', ...options }),
 			},
 			health: { ...init.defaults, ...init.health },
 		});
@@ -129,36 +130,83 @@ export abstract class Link<Instance> {
 		return this.checker.state;
 	}
 
-	/** open({ ms }), reset(), failures, remaining — see the rewrite doc §3.6. */
+	/** open({ ms }), reset(), failures, remaining. */
 	get breaker(): CircuitBreaker {
 		return this.checker.breaker;
 	}
 
 	/**
-	 * Idempotent: concurrent calls share one connect. A closed link reopens
-	 * (reclaiming its name). A failed link that still holds its old driver
-	 * object (the driver reported the failure) drops it first, so this opens a
-	 * fresh connection — the owner's way back.
+	 * Add a named listener. A second one with the same name for the same event
+	 * throws `DUPLICATE_NAME`. `connect` on a link that's already `ready` runs
+	 * the handler once, right away.
 	 */
-	async connect(): Promise<void> {
-		if (this.current === 'closed') this.registry?.add({ link: this });
-		if (this.current === 'failed' && this.instance && !this.reopening) {
-			this.reopening = this.__drop({
-				extras: 'release',
-				error: new Error(`${this.label}: reconnecting`),
-			}).finally(() => {
-				this.reopening = null;
+	on<T extends keyof Events & string>(
+		type: T,
+		listener: Listener<Events[T]>,
+	): void {
+		const named = this.handlers.get(type) ?? new Map<string, Handler>();
+		if (named.has(listener.name)) {
+			throw new LinkError({
+				code: 'DUPLICATE_NAME',
+				link: this.name,
+				connector: this.connector,
+				message: `${this.label}: a '${type}' listener named '${listener.name}' already exists`,
 			});
 		}
-		if (this.reopening) await this.reopening;
+		const handler = listener.handler as Handler;
+		named.set(listener.name, handler);
+		this.handlers.set(type, named);
+		if (type === 'connect' && this.current === 'ready') {
+			this.__call({
+				type,
+				name: listener.name,
+				handler,
+				event: { name: this.name },
+			});
+		}
+	}
+
+	off<T extends keyof Events & string>(
+		type: T,
+		options: { name: string },
+	): void {
+		this.handlers.get(type)?.delete(options.name);
+	}
+
+	/**
+	 * Create the driver object and connect it — idempotent, concurrent calls
+	 * share one connect. A no-op when there already is one (the driver owns
+	 * reconnecting it). A closed link reopens with a fresh one. An extra
+	 * connection whose connector isn't ready logs a warning and returns: its
+	 * connector connects it once ready.
+	 */
+	async connect(): Promise<void> {
+		if (this.current === 'closed') this.__state({ state: 'idle' });
+		const upstream = this.upstream;
+		if (upstream && upstream.state !== 'ready') {
+			log.warn(
+				`${this.label}: waiting — ${upstream.name} is ${upstream.state}`,
+			);
+			return;
+		}
 		return this.connection.get();
 	}
 
-	/** The owner's close: extras first, then this link. Frees the name. */
+	/** The owner's close: extras first, then this link. */
 	async close(): Promise<void> {
-		await this.__drop({ extras: 'close' });
+		this.epoch++;
+		this.connection.reset();
+		for (const extra of this.__extras()) await extra.close();
+		const instance = this.instance;
+		this.instance = null;
+		this.announced = null;
+		this.held = null;
+		if (instance) {
+			await this.__shut({ instance }).catch((error) => {
+				log.error(error, `${this.label}: shutting the connection failed`);
+			});
+		}
 		this.__state({ state: 'closed' });
-		this.registry?.remove({ link: this });
 	}
 
 	/** One raw check — no retry, no breaker. Never throws. */
@@ -173,9 +221,10 @@ export abstract class Link<Instance> {
 	}
 
 	/**
-	 * Reconnect if needed, ping with a time limit and retries, count failures
-	 * against the breaker. `{ trial: true }` runs the breaker's trial now.
-	 * Never throws.
+	 * Connect if there's no driver object yet, ping with a time limit and
+	 * retries, count failures against the breaker. `{ trial: true }` runs the
+	 * breaker's trial now. A connector that passes also connects its extras
+	 * that have no driver object yet. Never throws.
 	 */
 	async health(options: HealthCheckOptions = {}): Promise<Result<unknown>> {
 		if (this.current === 'closed') {
@@ -184,8 +233,9 @@ export abstract class Link<Instance> {
 		const result = await this.checker.check(options);
 		if (result.ok) {
 			if (this.current === 'failed' && this.instance) {
-				this.__state({ state: this.__settled() });
+				this.__state({ state: 'ready' });
 			}
+			this.__attach();
 		} else if (this.current === 'ready') {
 			this.__state({ state: 'failed', error: result.error });
 		}
@@ -209,14 +259,14 @@ export abstract class Link<Instance> {
 		instance: Instance;
 	}): Promise<Result<unknown>>;
 
-	/** State once opened. A Kafka consumer overrides: `connecting` until it joins its group. */
-	protected __settled(): LinkState {
-		return 'ready';
+	/** Extra connections of this link. Connectors override. */
+	protected __extras(): AnyLink[] {
+		return [];
 	}
 
-	/** Extra connections to close / release with this link. Connectors override. */
-	protected __extras(): Link<unknown>[] {
-		return [];
+	/** Whether a driver object exists. */
+	protected get opened(): boolean {
+		return this.instance !== null;
 	}
 
 	/** The current epoch — capture it when opening, pass it to `__mark`. */
@@ -224,14 +274,32 @@ export abstract class Link<Instance> {
 		return this.epoch;
 	}
 
-	/** A driver-reported state change. Ignored if it's from an older epoch or the link is closed. */
+	/**
+	 * A driver-reported state change. Ignored if it's from an older epoch,
+	 * before the open finished, or once the link is closed.
+	 */
 	protected __mark(options: {
 		state: LinkState;
 		epoch: number;
 		error?: unknown;
 	}): void {
 		if (options.epoch !== this.epoch || this.current === 'closed') return;
+		if (!this.instance) return;
+		// The driver has spoken — it wins over what the connector took down.
+		this.held = null;
 		this.__state({ state: options.state, error: options.error });
+	}
+
+	/** Fire an event to every listener, in order. */
+	protected __emit<T extends keyof Events & string>(
+		type: T,
+		event: Events[T],
+	): void {
+		const named = this.handlers.get(type);
+		if (!named) return;
+		for (const [name, handler] of named) {
+			this.__call({ type, name, handler, event });
+		}
 	}
 
 	protected __notReady(): LinkError {
@@ -270,32 +338,7 @@ export abstract class Link<Instance> {
 			});
 		}
 		this.instance = instance;
-		this.__state({ state: this.__settled() });
-	}
-
-	/** The breaker's release: drop the connection, keep the name, go `failed`. */
-	private async __release(options: { error: unknown }): Promise<void> {
-		await this.__drop({ extras: 'release', error: options.error });
-		this.__state({ state: 'failed', error: options.error });
-	}
-
-	private async __drop(options: {
-		extras: 'close' | 'release';
-		error?: unknown;
-	}): Promise<void> {
-		this.epoch++;
-		this.connection.reset();
-		for (const extra of this.__extras()) {
-			if (options.extras === 'close') await extra.close();
-			else await extra.__release({ error: options.error });
-		}
-		const instance = this.instance;
-		this.instance = null;
-		if (instance) {
-			await this.__shut({ instance }).catch((error) => {
-				log.error(error, `${this.label}: shutting the connection failed`);
-			});
-		}
+		this.__state({ state: 'ready' });
 	}
 
 	private __state(options: { state: LinkState; error?: unknown }): void {
@@ -303,54 +346,164 @@ export abstract class Link<Instance> {
 		this.current = options.state;
 		const event = { name: this.name };
 		if (options.state === 'ready') {
-			log.info(`${this.label}: ready`);
-			this.__emit(() => this.on.connect?.(event));
+			const fresh = this.announced !== this.instance;
+			this.announced = this.instance;
+			log.info(`${this.label}: ${fresh ? 'ready' : 'recovered'}`);
+			this.__emit(fresh ? 'connect' : 'recover', event);
+			this.__resume();
+			this.__attach();
 		} else if (options.state === 'failed') {
 			log.warn({ err: options.error }, `${this.label}: failed`);
-			this.__emit(() => this.on.fail?.({ ...event, error: options.error }));
+			this.__emit('fail', { ...event, error: options.error });
+			this.__hold({ error: options.error });
 		} else if (options.state === 'closed') {
 			log.info(`${this.label}: closed`);
-			this.__emit(() => this.on.close?.(event));
+			this.__emit('close', event);
 		}
 	}
 
-	/** An owner's handler must never break the link — sync throw or async rejection. */
-	private __emit(handler: () => unknown): void {
-		try {
-			Promise.resolve(handler()).catch((error) => {
-				log.error(error, `${this.label}: event handler failed`);
+	/** This connector failed: take its live extras down with it — state only. */
+	private __hold(options: { error: unknown }): void {
+		for (const extra of this.__extras()) {
+			if (extra.current !== 'ready' && extra.current !== 'connecting') continue;
+			extra.held = extra.current;
+			extra.__state({ state: 'failed', error: options.error });
+		}
+	}
+
+	/** This connector is ready again: give its extras back the state they had. */
+	private __resume(): void {
+		for (const extra of this.__extras()) {
+			const held = extra.held;
+			extra.held = null;
+			if (held && extra.current === 'failed') extra.__state({ state: held });
+		}
+	}
+
+	/** Connect the extras that have no driver object yet (closed ones aside). */
+	private __attach(): void {
+		if (this.current !== 'ready') return;
+		for (const extra of this.__extras()) {
+			if (extra.instance || extra.current === 'closed') continue;
+			extra.connect().catch((error: unknown) => {
+				log.warn(error, `${extra.label}: connect failed`);
 			});
+		}
+	}
+
+	/** One listener — a throw or a rejection is logged, never propagated. */
+	private __call(options: {
+		type: string;
+		name: string;
+		handler: Handler;
+		event: unknown;
+	}): void {
+		const { type, name, handler, event } = options;
+		const failed = (error: unknown) =>
+			log.error(error, `${this.label}: listener '${name}' (${type}) failed`);
+		try {
+			Promise.resolve(handler(event as never)).catch(failed);
 		} catch (error) {
-			log.error(error, `${this.label}: event handler failed`);
+			failed(error);
 		}
 	}
 }
 
 /**
- * A link that opens extra connections. Holds their scope: closes them before
- * itself, releases them when its own breaker releases it.
+ * A link that owns extra connections, declared in its config and created in
+ * its constructor. It connects them once it's ready, closes them before
+ * itself, and takes their state down with its own. Optionally re-checks
+ * itself on a timer (`recover.every`).
  */
-export abstract class Connector<Instance> extends Link<Instance> {
-	protected readonly scope: Scope;
-	protected readonly defaults: HealthOptions;
+export abstract class Connector<
+	Instance,
+	Events extends LinkEventMap = LinkEventMap,
+> extends Link<Instance, Events> {
+	private readonly adopted = new Map<string, AnyLink>();
+	private readonly defaults: HealthOptions;
+	private readonly every: number;
+	private timer: ReturnType<typeof setInterval> | null = null;
+	private passing = false;
 
-	constructor(init: LinkInit) {
+	constructor(init: LinkInit & ConnectorOptions) {
 		super(init);
-		this.scope = new Scope({ connector: this.name });
 		this.defaults = { ...init.health };
+		this.every = setting({
+			value: init.recover?.every,
+			env: 'RECOVER_EVERY_MS',
+			min: 0,
+			fallback: 0,
+		});
 	}
 
-	protected override __extras(): Link<unknown>[] {
-		return this.scope.list();
+	override async connect(): Promise<void> {
+		this.__watch();
+		return super.connect();
+	}
+
+	override async close(): Promise<void> {
+		if (this.timer) clearInterval(this.timer);
+		this.timer = null;
+		return super.close();
+	}
+
+	protected override __extras(): AnyLink[] {
+		return [...this.adopted.values()];
 	}
 
 	/** What every extra connection of this connector is created with. */
 	protected __child(options: LinkOptions): LinkInit {
-		return {
-			...options,
-			connector: this.name,
-			scope: this.scope,
-			defaults: this.defaults,
-		};
+		return { ...options, parent: this, defaults: this.defaults };
+	}
+
+	/** Register a declared extra connection. Names are unique per connector. */
+	protected __adopt<T extends AnyLink>(link: T): T {
+		if (this.adopted.has(link.name)) {
+			throw new LinkError({
+				code: 'DUPLICATE_NAME',
+				link: link.name,
+				connector: this.name,
+				message: `${this.name}: a link named '${link.name}' already exists`,
+			});
+		}
+		this.adopted.set(link.name, link);
+		return link;
+	}
+
+	/** The extras of one class, by name. */
+	protected __of<T extends AnyLink>(options: {
+		kind: abstract new (...args: never[]) => T;
+	}): Links<T> {
+		const items = new Map<string, T>();
+		for (const [name, link] of this.adopted) {
+			if (link instanceof options.kind) items.set(name, link);
+		}
+		return new Links({ connector: this.name, items });
+	}
+
+	/** Start the recover timer, once, if one is set. */
+	private __watch(): void {
+		if (this.timer || this.every <= 0) return;
+		this.timer = setInterval(() => void this.__pass(), this.every);
+		this.timer.unref?.();
+	}
+
+	/**
+	 * One recover pass: connect while there's no driver object (bounded by the
+	 * driver's own connect timeout, not the health timeout), else `health()`.
+	 * Passes never overlap. Never throws.
+	 */
+	private async __pass(): Promise<void> {
+		if (this.passing || this.state === 'closed') return;
+		this.passing = true;
+		try {
+			if (this.opened) await this.health();
+			else
+				await super.connect().catch((error: unknown) => {
+					log.warn(error, `${this.label}: connect failed`);
+				});
+		} finally {
+			this.passing = false;
+		}
 	}
 }

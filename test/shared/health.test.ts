@@ -12,7 +12,7 @@ function fakeTarget() {
 		mode: 'ok' as 'ok' | 'fail' | 'hang' | 'throw',
 		connects: 0,
 		pings: 0,
-		closes: 0,
+		trips: 0,
 		async connect() {
 			target.connects++;
 		},
@@ -24,8 +24,8 @@ function fakeTarget() {
 				return { ok: false, error: new Error('down') };
 			return { ok: true };
 		},
-		async release() {
-			target.closes++;
+		trip() {
+			target.trips++;
 		},
 	};
 	return target;
@@ -99,14 +99,14 @@ describe('HealthCheck', () => {
 		expect(health.state).toBe('open');
 	});
 
-	test('opening the circuit releases the connection before check() returns', async () => {
+	test('opening the circuit trips the target once — nothing is released', async () => {
 		const target = fakeTarget();
 		target.mode = 'fail';
 		const health = new HealthCheck({ name: 'Fake', target, health: quick });
 		await health.check();
-		expect(target.closes).toBe(0);
+		expect(target.trips).toBe(0);
 		await health.check();
-		expect(target.closes).toBe(1);
+		expect(target.trips).toBe(1);
 	});
 
 	test('while open, check() fails fast without pinging', async () => {
@@ -121,7 +121,7 @@ describe('HealthCheck', () => {
 		expect(target.pings).toBe(pings);
 	});
 
-	test('after cooldown, the trial check reconnects and closes the circuit', async () => {
+	test('after cooldown, the trial check pings again and closes the circuit', async () => {
 		const target = fakeTarget();
 		target.mode = 'fail';
 		const health = new HealthCheck({
@@ -175,7 +175,7 @@ describe('HealthCheck', () => {
 });
 
 describe('HealthCheck — manual trial', () => {
-	test('check({ trial: true }) reconnects and pings now, closing an open circuit', async () => {
+	test('check({ trial: true }) pings now, closing an open circuit', async () => {
 		const target = fakeTarget();
 		target.mode = 'fail';
 		const health = new HealthCheck({
@@ -197,16 +197,16 @@ describe('HealthCheck — manual trial', () => {
 		expect(health.state).toBe('closed');
 	});
 
-	test('a failed manual trial reopens and releases the connection again', async () => {
+	test('a failed manual trial reopens the circuit and trips again', async () => {
 		const target = fakeTarget();
 		target.mode = 'fail';
 		const health = new HealthCheck({ name: 'Fake', target, health: quick });
 		await health.check();
 		await health.check();
-		const closes = target.closes;
+		const trips = target.trips;
 		const result = await health.check({ trial: true });
 		expect(result.ok).toBe(false);
 		expect(health.state).toBe('open');
-		expect(target.closes).toBe(closes + 1);
+		expect(target.trips).toBe(trips + 1);
 	});
 });

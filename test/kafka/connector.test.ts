@@ -65,34 +65,43 @@ describe('KafkaConnector', () => {
 		expect(() => connector!.admin()).toThrow(LinkError);
 	});
 
-	test('producer → consumer round trip; consumer ready only after joining its group', async () => {
-		connector = new KafkaConnector({ name: 'kafka', brokers: BROKERS });
-		await connector.connect();
-
-		const producer = connector.producer({ name: 'out' });
-		await producer.connect();
-		expect(producer.state).toBe('ready');
-
-		const joined: string[] = [];
-		const consumer = connector.consumer({
-			name: 'in',
-			groupId: `lifecycle-${Date.now()}`,
-			on: { connect: ({ name }) => joined.push(name) },
+	/** A connector with one producer and one consumer that records messages. */
+	const declared = (options: { consumer?: object; health?: object } = {}) => {
+		connector = new KafkaConnector({
+			name: 'kafka',
+			brokers: BROKERS,
+			producers: [{ name: 'out' }],
+			consumers: [
+				{ name: 'in', groupId: `group-${Date.now()}`, ...options.consumer },
+			],
+			...(options.health && { health: options.health }),
 		});
-		await consumer.connect();
-		expect(consumer.state).toBe('connecting'); // connected, not yet in its group
-		expect((await consumer.ping()).ok).toBe(false);
+		return {
+			producer: connector.producers.get('out'),
+			consumer: connector.consumers.get('in'),
+		};
+	};
 
+	test('producer → consumer round trip: both connect with the connector; the owner subscribes on connect', async () => {
+		const { producer, consumer } = declared();
+		const connects: string[] = [];
 		const received: string[] = [];
-		const raw = consumer.getInstance(); // available before ready — needed to join
-		await raw.subscribe({ topic: TOPIC, fromBeginning: true });
-		await raw.run({
-			eachMessage: async ({ message }) => {
-				received.push(message.value?.toString() ?? '');
+		consumer.on('connect', {
+			name: 'subscribe',
+			handler: async ({ name }) => {
+				connects.push(name);
+				const raw = consumer.getInstance();
+				await raw.subscribe({ topic: TOPIC, fromBeginning: true });
+				await raw.run({
+					eachMessage: async ({ message }) => {
+						received.push(message.value?.toString() ?? '');
+					},
+				});
 			},
 		});
-		await until(() => consumer.state === 'ready');
-		expect(joined).toEqual(['in']);
+		await connector!.connect();
+		await until(() => producer.state === 'ready' && consumer.state === 'ready');
+		expect(connects).toEqual(['in']);
 
 		await producer
 			.getInstance()
@@ -100,73 +109,134 @@ describe('KafkaConnector', () => {
 		await until(() => received.includes('hi'));
 	}, 30_000);
 
-	test('a crashed / disconnected consumer fails alone; the connector stays ready', async () => {
-		connector = new KafkaConnector({ name: 'kafka', brokers: BROKERS });
-		await connector.connect();
-		const producer = connector.producer({ name: 'out' });
-		await producer.connect();
-		const consumer = connector.consumer({
-			name: 'in',
-			groupId: `crash-${Date.now()}`,
+	test('kafkajs restarts a crashed consumer — connecting, then recover; no second connect, no re-subscribe', async () => {
+		const { producer, consumer } = declared({
+			consumer: { retry: { retries: 0, initialRetryTime: 100 } },
 		});
-		await consumer.connect();
+		const events: string[] = [];
+		for (const type of ['connect', 'recover', 'fail'] as const) {
+			consumer.on(type, {
+				name: 'recorder',
+				handler: () => {
+					events.push(type);
+				},
+			});
+		}
+		let thrown = false;
+		const received: string[] = [];
+		consumer.on('connect', {
+			name: 'subscribe',
+			handler: async () => {
+				const raw = consumer.getInstance();
+				await raw.subscribe({ topic: TOPIC, fromBeginning: true });
+				await raw.run({
+					eachMessage: async ({ message }) => {
+						const value = message.value?.toString() ?? '';
+						if (value === 'boom' && !thrown) {
+							thrown = true;
+							throw new Error('handler crash'); // retries exhausted → CRASH, restart
+						}
+						received.push(value);
+					},
+				});
+			},
+		});
+		await connector!.connect();
+		await until(() => producer.state === 'ready' && consumer.state === 'ready');
+		const raw = consumer.getInstance();
+		await sleep(1_000); // let it join before publishing
+		await producer
+			.getInstance()
+			.send({ topic: TOPIC, messages: [{ value: 'boom' }] });
+		await until(() => received.includes('boom')); // redelivered after the restart
+		await until(() => consumer.state === 'ready');
+		expect(consumer.getInstance()).toBe(raw);
+		expect(events.filter((e) => e === 'connect')).toEqual(['connect']);
+		expect(events).toContain('recover');
+		expect(events).not.toContain('fail'); // a restart isn't a failure
+	}, 60_000);
 
-		const failures: string[] = [];
-		const watched = connector.consumer({
-			name: 'watched',
-			groupId: `watched-${Date.now()}`,
-			on: { fail: ({ name }) => failures.push(name) },
+	test('a consumer kafkajs gives up on fails alone and stays failed; the connector and producer stay ready', async () => {
+		const { producer, consumer } = declared({
+			consumer: {
+				retry: { retries: 0, restartOnFailure: async () => false },
+			},
 		});
-		await watched.connect();
-		await watched.getInstance().disconnect(); // driver-side disconnect, not our close()
-		await until(() => watched.state === 'failed');
-		expect(failures).toEqual(['watched']);
-		expect(connector.state).toBe('ready');
+		const failures: string[] = [];
+		consumer.on('fail', {
+			name: 'test',
+			handler: ({ name }) => {
+				failures.push(name);
+			},
+		});
+		consumer.on('connect', {
+			name: 'subscribe',
+			handler: async () => {
+				const raw = consumer.getInstance();
+				await raw.subscribe({ topic: TOPIC, fromBeginning: true });
+				await raw.run({
+					eachMessage: async () => {
+						throw new Error('handler crash');
+					},
+				});
+			},
+		});
+		await connector!.connect();
+		await until(() => producer.state === 'ready');
+		await producer
+			.getInstance()
+			.send({ topic: TOPIC, messages: [{ value: 'fatal' }] });
+		await until(() => consumer.state === 'failed');
+		expect(failures).toEqual(['in']);
+		expect(connector!.state).toBe('ready');
 		expect(producer.state).toBe('ready');
 
-		await watched.connect(); // the owner's usual way back: a fresh consumer connection
-		expect(watched.state).toBe('connecting');
+		await connector!.health(); // it has a driver object — left to the driver
+		expect(consumer.state).toBe('failed');
+
+		await consumer.close(); // the owner decides: a fresh consumer
+		consumer.off('connect', { name: 'subscribe' });
+		await consumer.connect();
+		expect(consumer.state).toBe('ready');
 	}, 30_000);
 
-	test('producers / consumers tracked by name across both kinds; duplicates throw', async () => {
-		connector = new KafkaConnector({ name: 'kafka', brokers: BROKERS });
-		const producer = connector.producer({ name: 'x' });
-		expect(connector.producers.get('x')).toBe(producer);
-		expect(() => connector!.consumer({ name: 'x', groupId: 'g' })).toThrow(
-			LinkError,
-		);
-		await producer.close();
-		expect(() =>
-			connector!.consumer({ name: 'x', groupId: 'g' }),
-		).not.toThrow();
-		expect(connector.consumers.has('x')).toBe(true);
+	test('looked up by name; names are unique across producers and consumers', () => {
+		const { producer } = declared();
+		expect(connector!.producers.get('out')).toBe(producer);
+		expect(() => connector!.producers.get('in')).toThrow(LinkError);
+		expect(
+			() =>
+				new KafkaConnector({
+					name: 'dup',
+					brokers: BROKERS,
+					producers: [{ name: 'x' }],
+					consumers: [{ name: 'x', groupId: 'g' }],
+				}),
+		).toThrow(LinkError);
 	});
 
-	test('producer connect() before the connector → NOT_READY', async () => {
-		connector = new KafkaConnector({ name: 'kafka', brokers: BROKERS });
-		await expect(
-			connector.producer({ name: 'p' }).connect(),
-		).rejects.toBeInstanceOf(LinkError);
+	test('producer connect() before the connector is ready waits — no throw, stays idle', async () => {
+		const { producer } = declared();
+		await producer.connect();
+		expect(producer.state).toBe('idle');
 	});
 
-	test("the connector's breaker releasing it fails producers and consumers; close() closes them", async () => {
-		connector = new KafkaConnector({
-			name: 'kafka',
-			brokers: BROKERS,
+	test('the connector failing takes its producer down and back — same object; close() closes it', async () => {
+		const { producer } = declared({
 			health: { threshold: 1, cooldown: 60_000, attempts: 1 },
 		});
-		await connector.connect();
-		const producer = connector.producer({ name: 'out' });
-		await producer.connect();
-		connector.breaker.open({ ms: 60_000 });
-		await until(() => producer.state === 'failed');
-		expect(connector.state).toBe('failed');
+		await connector!.connect();
+		await until(() => producer.state === 'ready');
+		const raw = producer.getInstance();
+		connector!.breaker.open({ ms: 60_000 });
+		expect(connector!.state).toBe('failed');
+		expect(producer.state).toBe('failed');
 
-		connector.breaker.reset();
-		await connector.connect();
-		await producer.connect();
+		connector!.breaker.reset();
+		expect((await connector!.health()).ok).toBe(true);
 		expect(producer.state).toBe('ready');
-		await connector.close();
+		expect(producer.getInstance()).toBe(raw);
+		await connector!.close();
 		expect(producer.state).toBe('closed');
 		connector = undefined;
 	}, 30_000);

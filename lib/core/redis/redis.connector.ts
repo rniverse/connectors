@@ -1,7 +1,7 @@
 // lib/core/redis/redis.connector.ts
 
 import type { Result } from '@rniverse/utils/result';
-import { Connector } from '@shared/link';
+import { Connector, type Links } from '@shared/link';
 import { appName } from '@shared/setting';
 import {
 	GlideClient,
@@ -9,11 +9,11 @@ import {
 } from '@valkey/valkey-glide';
 import { configuration } from './redis.helper';
 import { RedisSubscriber } from './redis.subscriber';
-import type { RedisConfig, RedisSubscriberOptions } from './redis.type';
+import type { RedisConfig } from './redis.type';
 
 /**
  * One Redis / Valkey server + logical database, via glide — `getInstance()` is
- * the `GlideClient` itself. Extra connections: `subscriber()`.
+ * the `GlideClient` itself. Extra connections: `subscribers` (config).
  */
 export class RedisConnector extends Connector<GlideClient> {
 	private readonly glide: GlideClientConfiguration;
@@ -24,22 +24,20 @@ export class RedisConnector extends Connector<GlideClient> {
 			config,
 			appName: appName({ value: config.appName, connector: config.name }),
 		});
+		for (const { channels, patterns, ...link } of config.subscribers ?? []) {
+			this.__adopt(
+				new RedisSubscriber({
+					...this.__child(link),
+					server: this,
+					channels: channels ?? [],
+					patterns: patterns ?? [],
+				}),
+			);
+		}
 	}
 
-	/** A pub/sub subscriber on its own connection. */
-	subscriber(options: RedisSubscriberOptions): RedisSubscriber {
-		const { channels, patterns, onMessage, ...link } = options;
-		return new RedisSubscriber({
-			...this.__child(link),
-			parent: this,
-			channels: channels ?? [],
-			patterns: patterns ?? [],
-			onMessage,
-		});
-	}
-
-	get subscribers(): ReadonlyMap<string, RedisSubscriber> {
-		return this.scope.of({ kind: RedisSubscriber });
+	get subscribers(): Links<RedisSubscriber> {
+		return this.__of({ kind: RedisSubscriber });
 	}
 
 	/** The glide configuration subscribers build their own client from. Internal. */

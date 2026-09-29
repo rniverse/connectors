@@ -1,9 +1,9 @@
 // lib/core/mongo/mongo.type.ts
 
-import type { LinkOptions } from '@shared/shared.type';
+import type { ConnectorOptions } from '@shared/shared.type';
 
 /** The Mongo driver takes a connection string plus options — both passed through as given. */
-export type MongoConfig = LinkOptions & {
+export type MongoConfig = ConnectorOptions & {
 	url: string;
 	/** Default for `db()`. Else the URL's database, else the driver's (`test`). */
 	database?: string;

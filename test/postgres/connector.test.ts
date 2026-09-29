@@ -75,7 +75,12 @@ describe('PostgresConnector', () => {
 			name: 'pg',
 			url: 'postgres://nope:nope@127.0.0.1:5433/nope',
 			pool: { connectionTimeout: 2 },
-			on: { fail: () => events.push('fail') },
+		});
+		connector.on('fail', {
+			name: 'test',
+			handler: () => {
+				events.push('fail');
+			},
 		});
 		await expect(connector.connect()).rejects.toThrow();
 		expect(connector.state).toBe('failed');
@@ -110,35 +115,41 @@ describe('PostgresConnector', () => {
 	});
 
 	describe('health + breaker', () => {
-		test('opens and releases the pool once checks fail; recovers after the cooldown', async () => {
+		test('the circuit opening keeps the pool; after the cooldown the trial pings it and it recovers', async () => {
 			connector = new PostgresConnector({
 				name: 'pg',
 				url: URL,
 				health: { threshold: 1, cooldown: 50, attempts: 1 },
 			});
 			await connector.connect();
-			await connector.getInstance().$client.end({ timeout: 1 }); // kill the pool underneath
-			expect((await connector.health()).ok).toBe(false);
-			expect(connector.circuit).toBe('open');
+			const db = connector.getInstance();
+			connector.breaker.open({ ms: 50 });
 			expect(connector.state).toBe('failed');
-			expect(() => connector!.getInstance()).toThrow(LinkError);
+			expect((await connector.health()).ok).toBe(false); // fails fast while open
+			expect(connector.getInstance()).toBe(db);
 
 			await sleep(70);
-			expect((await connector.health()).ok).toBe(true); // the trial reconnected
+			expect((await connector.health()).ok).toBe(true);
 			expect(connector.state).toBe('ready');
+			expect(connector.getInstance()).toBe(db);
 		});
 
-		test('health({ trial: true }) reconnects now', async () => {
+		test("dropped server connections are the driver's to fix — same pool, healthy again", async () => {
 			connector = new PostgresConnector({
 				name: 'pg',
 				url: URL,
-				health: { threshold: 1, cooldown: 60_000, attempts: 1 },
+				appName: 'connector-test-dropped',
 			});
 			await connector.connect();
-			await connector.getInstance().$client.end({ timeout: 1 });
-			await connector.health();
-			expect((await connector.health({ trial: true })).ok).toBe(true);
-			expect(connector.circuit).toBe('closed');
+			const db = connector.getInstance();
+			const admin = new PostgresConnector({ name: 'admin', url: URL });
+			await admin.connect();
+			await admin.getInstance()
+				.$client`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = 'connector-test-dropped'`;
+			await admin.close();
+
+			expect((await connector.health()).ok).toBe(true);
+			expect(connector.getInstance()).toBe(db);
 		});
 	});
 
@@ -166,90 +177,78 @@ describe('PostgresConnector', () => {
 		});
 	});
 
-	describe('listen()', () => {
-		test('receives NOTIFY — JSON parsed, anything else as the raw string', async () => {
-			connector = new PostgresConnector({ name: 'pg', url: URL });
-			await connector.connect();
-			const received: unknown[] = [];
-			const listener = connector.listen({
-				name: 'events',
-				channel: 'connector_test_events',
-				onMessage: (payload) => received.push(payload),
+	describe('listeners', () => {
+		/** A connector with one declared listener that records its messages. */
+		const listening = (options: { channel: string; health?: object }) => {
+			connector = new PostgresConnector({
+				name: 'pg',
+				url: URL,
+				listeners: [{ name: 'events', channel: options.channel }],
+				...(options.health && { health: options.health }),
 			});
-			await listener.connect();
-			expect(listener.state).toBe('ready');
+			const listener = connector.listeners.get('events');
+			const received: unknown[] = [];
+			listener.on('message', {
+				name: 'test',
+				handler: (payload) => {
+					received.push(payload);
+				},
+			});
+			return { listener, received };
+		};
 
-			const sql = connector.getInstance().$client;
+		test('connects with its connector; message events — JSON parsed, anything else the raw string', async () => {
+			const { listener, received } = listening({
+				channel: 'connector_test_events',
+			});
+			await connector!.connect();
+			await until(() => listener.state === 'ready');
+
+			const sql = connector!.getInstance().$client;
 			await sql.notify('connector_test_events', JSON.stringify({ a: 1 }));
 			await sql.notify('connector_test_events', 'plain text');
 			await until(() => received.length === 2);
 			expect(received).toEqual([{ a: 1 }, 'plain text']);
 		});
 
-		test('listeners are tracked by name; duplicates throw; close frees the name', async () => {
-			connector = new PostgresConnector({ name: 'pg', url: URL });
-			await connector.connect();
-			const first = connector.listen({
-				name: 'x',
-				channel: 'c1',
-				onMessage: () => {},
-			});
-			expect(connector.listeners.get('x')).toBe(first);
-			expect(() =>
-				connector!.listen({ name: 'x', channel: 'c2', onMessage: () => {} }),
-			).toThrow(LinkError);
-			await first.close();
-			expect(connector.listeners.has('x')).toBe(false);
+		test('looked up by name; an unknown name throws UNKNOWN_NAME', () => {
+			const { listener } = listening({ channel: 'c1' });
+			expect(listener.channel).toBe('c1');
+			expect(connector!.listeners.size).toBe(1);
+			expect(() => connector!.listeners.get('nope')).toThrow(LinkError);
 		});
 
-		test('connect() before the connector is connected → NOT_READY', async () => {
-			connector = new PostgresConnector({ name: 'pg', url: URL });
-			const listener = connector.listen({
-				name: 'x',
-				channel: 'c',
-				onMessage: () => {},
-			});
-			await expect(listener.connect()).rejects.toBeInstanceOf(LinkError);
-		});
-
-		test('closing the connector closes its listeners (and stops delivery)', async () => {
-			connector = new PostgresConnector({ name: 'pg', url: URL });
-			await connector.connect();
-			const listener = connector.listen({
-				name: 'x',
-				channel: 'c',
-				onMessage: () => {},
-			});
+		test('connect() before the connector is ready waits — no throw, stays idle', async () => {
+			const { listener } = listening({ channel: 'c' });
 			await listener.connect();
-			await connector.close();
+			expect(listener.state).toBe('idle');
+		});
+
+		test('closing the connector closes its listeners', async () => {
+			const { listener } = listening({ channel: 'c' });
+			await connector!.connect();
+			await until(() => listener.state === 'ready');
+			await connector!.close();
 			expect(listener.state).toBe('closed');
 			connector = undefined;
 		});
 
-		test("the connector's breaker releasing it fails its listeners; they reconnect on connect()", async () => {
-			connector = new PostgresConnector({
-				name: 'pg',
-				url: URL,
+		test('the connector failing takes the listener down and back — same LISTEN, still delivering', async () => {
+			const { listener, received } = listening({
+				channel: 'connector_test_recover',
 				health: { threshold: 1, cooldown: 60_000, attempts: 1 },
 			});
-			await connector.connect();
-			const received: unknown[] = [];
-			const listener = connector.listen({
-				name: 'x',
-				channel: 'connector_test_recover',
-				onMessage: (p) => received.push(p),
-			});
-			await listener.connect();
+			await connector!.connect();
+			await until(() => listener.state === 'ready');
 
-			connector.breaker.open({ ms: 60_000 });
-			await until(() => listener.state === 'failed');
-			expect(connector.state).toBe('failed');
+			connector!.breaker.open({ ms: 60_000 });
+			expect(connector!.state).toBe('failed');
+			expect(listener.state).toBe('failed');
 
-			connector.breaker.reset();
-			await connector.connect();
-			await listener.connect();
+			connector!.breaker.reset();
+			expect((await connector!.health()).ok).toBe(true);
 			expect(listener.state).toBe('ready');
-			await connector
+			await connector!
 				.getInstance()
 				.$client.notify('connector_test_recover', '"back"');
 			await until(() => received.length === 1);

@@ -6,22 +6,30 @@ import type { Result } from '@rniverse/utils/result';
  * Where a link is in its life.
  *
  * - `idle` — created, never connected
- * - `connecting` — connect in progress, or reconnecting
+ * - `connecting` — connect in progress, or the driver is reconnecting
  * - `ready` — connected and able to do its job
- * - `failed` — connect or health check failed, the driver reported a crash, or
- *   a breaker released the connection
- * - `closed` — the owner called `close()` (never the breaker's doing)
+ * - `failed` — connect or health check failed, the driver reported a failure,
+ *   the circuit opened, or its connector failed
+ * - `closed` — the owner called `close()`
  */
 export type LinkState = 'idle' | 'connecting' | 'ready' | 'failed' | 'closed';
 
-/** What an owner hears. Every breaker change also shows up as one of these. */
-export type LinkEvents = {
-	/** → `ready`, the first time or again after a failure. */
-	connect?: (event: { name: string }) => void;
+/** Every link's events and their payloads. */
+export type LinkEventMap = {
+	/** A new driver object connected — set it up (e.g. subscribe). */
+	connect: { name: string };
+	/** Back to `ready` on the same driver object. */
+	recover: { name: string };
 	/** → `failed`. */
-	fail?: (event: { name: string; error: unknown }) => void;
+	fail: { name: string; error: unknown };
 	/** → `closed` (the owner's close). */
-	close?: (event: { name: string }) => void;
+	close: { name: string };
+};
+
+/** A named handler for one event. Names are unique per link and event. */
+export type Listener<Payload> = {
+	name: string;
+	handler: (event: Payload) => unknown;
 };
 
 /**
@@ -31,7 +39,7 @@ export type LinkEvents = {
 export type HealthOptions = {
 	/** Pings per health check, including the first. Env `MAX_HEALTH_RETRIES`, default 3. */
 	attempts?: number;
-	/** ms each ping (incl. a reconnect) may take. Env `HEALTH_TIMEOUT_MS`, default 2000. */
+	/** ms each ping (incl. a first connect) may take. Env `HEALTH_TIMEOUT_MS`, default 2000. */
 	timeout?: number;
 	/** Consecutive failed checks that open the circuit. Env `CIRCUIT_THRESHOLD`, default 3. */
 	threshold?: number;
@@ -45,7 +53,15 @@ export type LinkOptions = {
 	name: string;
 	/** Extra connections default to their connector's settings. */
 	health?: HealthOptions;
-	on?: LinkEvents;
+};
+
+/** Options every connector takes. */
+export type ConnectorOptions = LinkOptions & {
+	/**
+	 * Re-check on a timer: `every` ms, connect when there's no driver object
+	 * yet, else `health()`. Env `RECOVER_EVERY_MS`, default off.
+	 */
+	recover?: { every?: number };
 };
 
 export type HealthCheckOptions = {
@@ -58,10 +74,11 @@ export type HealthCheckOptions = {
 
 /** What `HealthCheck` drives. */
 export type HealthTarget<T> = {
+	/** Create the driver object if there is none yet; a no-op otherwise. */
 	connect(): Promise<unknown>;
 	ping(): Promise<Result<T>>;
-	/** Drop the connection because the circuit opened (not the owner's close). */
-	release(options: { error: unknown }): Promise<void>;
+	/** The circuit opened — mark the link failed. Nothing is torn down. */
+	trip(options: { error: unknown }): void;
 };
 
 export type HealthCheckConfig<T> = {
@@ -71,4 +88,8 @@ export type HealthCheckConfig<T> = {
 	health?: HealthOptions;
 };
 
-export type LinkErrorCode = 'DUPLICATE_NAME' | 'NOT_READY' | 'MISSING_APP_NAME';
+export type LinkErrorCode =
+	| 'DUPLICATE_NAME'
+	| 'NOT_READY'
+	| 'MISSING_APP_NAME'
+	| 'UNKNOWN_NAME';
