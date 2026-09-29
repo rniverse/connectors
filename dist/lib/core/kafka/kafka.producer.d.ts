@@ -8,10 +8,10 @@ import type { KafkaConnector } from './kafka.connector.js';
  * producer-level ping, and reconnects to brokers lazily on the next send).
  */
 export declare class KafkaProducer extends Link<Producer> {
-    private readonly parent;
+    private readonly cluster;
     private readonly settings;
     constructor(init: LinkInit & {
-        parent: KafkaConnector;
+        cluster: KafkaConnector;
         settings: Partial<ProducerConfig>;
     });
     protected __open(): Promise<Producer>;

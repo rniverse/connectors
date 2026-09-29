@@ -1,5 +1,5 @@
 // lib/core/mongo/mongo.connector.ts
-import { Link } from '../../shared/link.js';
+import { Connector } from '../../shared/link.js';
 import { appName } from '../../shared/setting.js';
 import { MongoClient } from 'mongodb';
 import { options } from './mongo.helper.js';
@@ -8,9 +8,9 @@ import { options } from './mongo.helper.js';
  * the same pool via `db(name)`; no extra connections to track.
  *
  * State also follows the driver's server heartbeats: a failed heartbeat marks
- * it `failed`, the next successful one `ready` again.
+ * it `failed`, the next successful one `ready` again (`recover`).
  */
-export class MongoConnector extends Link {
+export class MongoConnector extends Connector {
     url;
     database;
     settings;

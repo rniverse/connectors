@@ -7,16 +7,16 @@ import { Partitioners } from 'kafkajs';
  * producer-level ping, and reconnects to brokers lazily on the next send).
  */
 export class KafkaProducer extends Link {
-    parent;
+    cluster;
     settings;
     constructor(init) {
         super(init);
-        this.parent = init.parent;
+        this.cluster = init.cluster;
         this.settings = init.settings;
     }
     async __open() {
         const epoch = this.__epoch();
-        const producer = this.parent.getInstance().producer({
+        const producer = this.cluster.getInstance().producer({
             createPartitioner: Partitioners.DefaultPartitioner,
             ...this.settings,
         });

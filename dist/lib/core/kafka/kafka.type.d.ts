@@ -1,4 +1,4 @@
-import type { LinkOptions } from '../../shared/shared.type.js';
+import type { ConnectorOptions, LinkOptions } from '../../shared/shared.type.js';
 import type { ConsumerConfig, KafkaConfig as KafkaJsConfig, ProducerConfig } from 'kafkajs';
 export type KafkaTLSConfig = boolean | {
     rejectUnauthorized?: boolean;
@@ -16,7 +16,7 @@ export type KafkaSASLConfig = {
  * comma-separated string (e.g. straight from `KAFKA_BOOTSTRAP_SERVERS`), split
  * on `,` and trimmed — nothing else is read out of it.
  */
-export type KafkaConfig = LinkOptions & {
+export type KafkaConfig = ConnectorOptions & {
     brokers: string | string[];
     /** kafkajs `clientId`. Required: this, else the `INSTANCE_NAME` env var. */
     appName?: string;
@@ -28,6 +28,10 @@ export type KafkaConfig = LinkOptions & {
     sasl?: KafkaSASLConfig;
     /** Raw kafkajs settings, applied last. */
     kafka?: Partial<KafkaJsConfig>;
+    /** Producers — connected once this is ready. */
+    producers?: KafkaProducerOptions[];
+    /** Consumers — connected once this is ready; the owner subscribes + runs on `connect`. */
+    consumers?: KafkaConsumerOptions[];
 };
 export type KafkaProducerOptions = LinkOptions & Partial<ProducerConfig>;
 export type KafkaConsumerOptions = LinkOptions & ConsumerConfig;

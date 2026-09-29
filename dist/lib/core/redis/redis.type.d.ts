@@ -1,10 +1,10 @@
-import type { LinkOptions } from '../../shared/shared.type.js';
+import type { ConnectorOptions, LinkEventMap, LinkOptions } from '../../shared/shared.type.js';
 /**
  * Fields only: glide has no URL input (`GlideClient.createClient` takes
  * addresses, credentials, tls, databaseId), and a URL is never parsed here.
  * Standalone servers only — cluster mode is out of scope.
  */
-export type RedisConfig = LinkOptions & {
+export type RedisConfig = ConnectorOptions & {
     host: string;
     port: number;
     tls?: boolean;
@@ -22,6 +22,8 @@ export type RedisConfig = LinkOptions & {
     tlsInsecure?: boolean;
     /** `CLIENT SETNAME`. Required: this, else the `INSTANCE_NAME` env var. */
     appName?: string;
+    /** Pub/sub subscribers, each on its own client — connected once this is ready. */
+    subscribers?: RedisSubscriberOptions[];
 };
 export type RedisMessage = {
     channel: string;
@@ -36,6 +38,9 @@ export type RedisMessage = {
 export type RedisSubscriberOptions = LinkOptions & {
     channels?: string[];
     patterns?: string[];
-    onMessage: (message: RedisMessage) => void;
+};
+/** Each message is a `message` event. */
+export type RedisSubscriberEvents = LinkEventMap & {
+    message: RedisMessage;
 };
 //# sourceMappingURL=redis.type.d.ts.map

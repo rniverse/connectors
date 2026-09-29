@@ -6,7 +6,7 @@ import { configuration } from './redis.helper.js';
 import { RedisSubscriber } from './redis.subscriber.js';
 /**
  * One Redis / Valkey server + logical database, via glide — `getInstance()` is
- * the `GlideClient` itself. Extra connections: `subscriber()`.
+ * the `GlideClient` itself. Extra connections: `subscribers` (config).
  */
 export class RedisConnector extends Connector {
     glide;
@@ -16,20 +16,17 @@ export class RedisConnector extends Connector {
             config,
             appName: appName({ value: config.appName, connector: config.name }),
         });
-    }
-    /** A pub/sub subscriber on its own connection. */
-    subscriber(options) {
-        const { channels, patterns, onMessage, ...link } = options;
-        return new RedisSubscriber({
-            ...this.__child(link),
-            parent: this,
-            channels: channels ?? [],
-            patterns: patterns ?? [],
-            onMessage,
-        });
+        for (const { channels, patterns, ...link } of config.subscribers ?? []) {
+            this.__adopt(new RedisSubscriber({
+                ...this.__child(link),
+                server: this,
+                channels: channels ?? [],
+                patterns: patterns ?? [],
+            }));
+        }
     }
     get subscribers() {
-        return this.scope.of({ kind: RedisSubscriber });
+        return this.__of({ kind: RedisSubscriber });
     }
     /** The glide configuration subscribers build their own client from. Internal. */
     configuration() {

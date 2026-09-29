@@ -6,7 +6,7 @@ import { client } from './postgres.helper.js';
 import { PostgresListener } from './postgres.listener.js';
 /**
  * One Postgres database: a postgres.js pool behind a drizzle db. Another
- * database = another connector. Extra connections: `listen()`.
+ * database = another connector. Extra connections: `listeners` (config).
  */
 export class PostgresConnector extends Connector {
     config;
@@ -22,19 +22,16 @@ export class PostgresConnector extends Connector {
             min: 0,
             fallback: 5,
         });
-    }
-    /** LISTEN on `channel` over its own connection. */
-    listen(options) {
-        const { channel, onMessage, ...link } = options;
-        return new PostgresListener({
-            ...this.__child(link),
-            parent: this,
-            channel,
-            onMessage,
-        });
+        for (const { channel, ...link } of config.listeners ?? []) {
+            this.__adopt(new PostgresListener({
+                ...this.__child(link),
+                database: this,
+                channel,
+            }));
+        }
     }
     get listeners() {
-        return this.scope.of({ kind: PostgresListener });
+        return this.__of({ kind: PostgresListener });
     }
     async __open() {
         const sql = client({ config: this.config, appName: this.appName });

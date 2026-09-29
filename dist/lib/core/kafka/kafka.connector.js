@@ -7,7 +7,7 @@ import { KafkaProducer } from './kafka.producer.js';
 /**
  * One Kafka / Redpanda cluster — `getInstance()` is the kafkajs `Kafka`; the
  * connector's own connection is its admin client. Extra connections:
- * `producer()`, `consumer()`.
+ * `producers`, `consumers` (config).
  */
 export class KafkaConnector extends Connector {
     config;
@@ -19,6 +19,20 @@ export class KafkaConnector extends Connector {
         super(config);
         this.config = config;
         this.appName = appName({ value: config.appName, connector: config.name });
+        for (const { name, health, ...settings } of config.producers ?? []) {
+            this.__adopt(new KafkaProducer({
+                ...this.__child({ name, health }),
+                cluster: this,
+                settings,
+            }));
+        }
+        for (const { name, health, ...settings } of config.consumers ?? []) {
+            this.__adopt(new KafkaConsumer({
+                ...this.__child({ name, health }),
+                cluster: this,
+                settings,
+            }));
+        }
     }
     /** The connector's own admin connection. */
     admin() {
@@ -27,27 +41,11 @@ export class KafkaConnector extends Connector {
             throw this.__notReady();
         return admin;
     }
-    producer(options) {
-        const { name, health, on, ...settings } = options;
-        return new KafkaProducer({
-            ...this.__child({ name, health, on }),
-            parent: this,
-            settings,
-        });
-    }
-    consumer(options) {
-        const { name, health, on, ...settings } = options;
-        return new KafkaConsumer({
-            ...this.__child({ name, health, on }),
-            parent: this,
-            settings,
-        });
-    }
     get producers() {
-        return this.scope.of({ kind: KafkaProducer });
+        return this.__of({ kind: KafkaProducer });
     }
     get consumers() {
-        return this.scope.of({ kind: KafkaConsumer });
+        return this.__of({ kind: KafkaConsumer });
     }
     async __open() {
         const kafka = client({ config: this.config, appName: this.appName });

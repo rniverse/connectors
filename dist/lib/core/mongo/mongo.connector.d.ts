@@ -1,5 +1,5 @@
 import type { Result } from '@rniverse/utils/result';
-import { Link } from '../../shared/link.js';
+import { Connector } from '../../shared/link.js';
 import { type Db, MongoClient } from 'mongodb';
 import type { MongoConfig } from './mongo.type.js';
 /**
@@ -7,9 +7,9 @@ import type { MongoConfig } from './mongo.type.js';
  * the same pool via `db(name)`; no extra connections to track.
  *
  * State also follows the driver's server heartbeats: a failed heartbeat marks
- * it `failed`, the next successful one `ready` again.
+ * it `failed`, the next successful one `ready` again (`recover`).
  */
-export declare class MongoConnector extends Link<MongoClient> {
+export declare class MongoConnector extends Connector<MongoClient> {
     private readonly url;
     private readonly database;
     private readonly settings;

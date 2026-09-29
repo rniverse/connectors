@@ -2,21 +2,20 @@ import type { Result } from '@rniverse/utils/result';
 import { Link, type LinkInit } from '../../shared/link.js';
 import { GlideClient } from '@valkey/valkey-glide';
 import type { RedisConnector } from './redis.connector.js';
-import type { RedisMessage } from './redis.type.js';
+import type { RedisSubscriberEvents } from './redis.type.js';
 /**
- * A pub/sub subscriber on its own `GlideClient`. Glide fixes subscriptions at
- * creation, so channels / patterns are given up front.
+ * A pub/sub subscriber on its own `GlideClient`; each message is a `message`
+ * event. Glide fixes subscriptions at creation, so channels / patterns are
+ * given up front, in the connector's config.
  */
-export declare class RedisSubscriber extends Link<GlideClient> {
-    private readonly parent;
+export declare class RedisSubscriber extends Link<GlideClient, RedisSubscriberEvents> {
+    private readonly server;
     readonly channels: readonly string[];
     readonly patterns: readonly string[];
-    private readonly onMessage;
     constructor(init: LinkInit & {
-        parent: RedisConnector;
+        server: RedisConnector;
         channels: string[];
         patterns: string[];
-        onMessage: (message: RedisMessage) => void;
     });
     protected __open(): Promise<GlideClient>;
     protected __shut(options: {

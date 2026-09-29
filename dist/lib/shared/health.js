@@ -9,10 +9,11 @@ const failed = (result) => !result.ok || result.data.ok === false;
  * retry a few times, and trip a circuit breaker after repeated failed checks.
  *
  * - While the circuit is open, `check()` fails immediately — no ping, no wait.
- * - Opening the circuit releases the connection, freeing its pool / sockets.
- * - After `cooldown`, the next check is the breaker's single trial: `connect()`
- *   runs again (it's a no-op while connected), so a recovered dependency comes
- *   back without anything else having to reconnect it.
+ * - Opening the circuit marks the link failed (`trip`) and destroys nothing:
+ *   the driver keeps reconnecting underneath.
+ * - After `cooldown`, the next check is the breaker's single trial — a plain
+ *   ping on the same driver object (`connect()` only creates one if there's
+ *   none yet).
  *
  * `check()` never throws — every failure comes back as `{ ok: false, error }`.
  */
@@ -20,9 +21,6 @@ export class HealthCheck {
     breaker;
     attempts;
     timeout;
-    // The release started when the circuit opened — awaited before check()
-    // returns, so a caller never sees "open" with the connection still up.
-    releasing = null;
     name;
     target;
     constructor(config) {
@@ -57,10 +55,9 @@ export class HealthCheck {
             trips: failed,
             on: {
                 open: ({ failures }) => {
-                    log.warn({ failures }, `${this.name} circuit open — releasing connection`);
-                    const error = new Error(`${this.name}: circuit open after ${failures} failed health checks`);
-                    this.releasing = this.target.release({ error }).catch((cause) => {
-                        log.error(cause, `${this.name} release after circuit open failed`);
+                    log.warn({ failures }, `${this.name} circuit open`);
+                    this.target.trip({
+                        error: new Error(`${this.name}: circuit open after ${failures} failed health checks`),
                     });
                 },
                 close: () => log.info(`${this.name} circuit closed — healthy again`),
@@ -72,7 +69,7 @@ export class HealthCheck {
     }
     /**
      * `{ trial: true }` runs this check as the breaker's trial now, skipping the
-     * rest of the cooldown — reconnect + ping immediately. Same single-trial
+     * rest of the cooldown — ping immediately. Same single-trial
      * rules; while closed it's just a normal check.
      */
     async check(options = {}) {
@@ -97,11 +94,6 @@ export class HealthCheck {
         }
         catch (error) {
             return { ok: false, error };
-        }
-        finally {
-            const releasing = this.releasing;
-            this.releasing = null;
-            await releasing;
         }
     }
 }
