@@ -76,21 +76,36 @@ export class HealthCheck {
         // The breaker wraps the whole check, retries included — `threshold`
         // counts failed *checks*, not failed pings. (`resilient` puts retry
         // outside the breaker, which would count every ping; wrong here.)
-        const attempt = () => timeout(async () => {
-            await this.target.connect();
-            return this.target.ping();
-        }, this.timeout);
+        let tries = 0;
+        const attempt = () => {
+            tries++;
+            return timeout(async () => {
+                await this.target.connect();
+                return this.target.ping();
+            }, this.timeout);
+        };
         const guarded = options.trial
             ? this.breaker.trial.bind(this.breaker)
             : this.breaker.run.bind(this.breaker);
         try {
-            return await guarded(() => retry(attempt, {
+            const result = await guarded(() => retry(attempt, {
                 attempts: this.attempts,
                 retryable: failed,
                 on: {
                     retry: ({ attempt, attempts }) => log.warn(`${this.name} health check failed, retrying... (${attempt}/${attempts})`),
                 },
             }));
+            // A retry was announced — say how it ended, even when the link's
+            // state doesn't change (it would log nothing else).
+            if (tries > 1) {
+                if (result.ok) {
+                    log.info(`${this.name} health check passed on attempt ${tries}/${this.attempts}`);
+                }
+                else {
+                    log.warn(`${this.name} health check failed after ${tries} attempts`);
+                }
+            }
+            return result;
         }
         catch (error) {
             return { ok: false, error };
